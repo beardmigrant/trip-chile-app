@@ -1,0 +1,82 @@
+@import "maplibre-gl/dist/maplibre-gl.css";
+@import "maplibre-gl/dist/maplibre-gl.css";
+@import "maplibre-gl/dist/maplibre-gl.css";
+@import "maplibre-gl/dist/maplibre-gl.css";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 220 30% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --primary: 211 100% 40%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 220 14% 96%;
+    --accent-foreground: 222 47% 11%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 211 100% 40%;
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    --background: 222 47% 4%;
+    --foreground: 220 14% 91%;
+    --card: 222 40% 8%;
+    --card-foreground: 220 14% 91%;
+    --primary: 211 100% 50%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 222 30% 13%;
+    --secondary-foreground: 220 14% 91%;
+    --muted: 222 30% 13%;
+    --muted-foreground: 220 9% 60%;
+    --accent: 222 30% 13%;
+    --accent-foreground: 220 14% 91%;
+    --border: 222 25% 18%;
+    --input: 222 25% 18%;
+    --ring: 211 100% 50%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+@layer utilities {
+  .glass {
+    @apply backdrop-blur-xl bg-card/80 border border-border/50;
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  /* Hide scrollbar but allow scroll */
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+}
+
+/* Map fixes */
+.maplibregl-canvas { outline: none !important; }
+.maplibregl-ctrl-attrib { display: none !important; }
+
+/* Safe area insets for mobile */
+.safe-top { padding-top: env(safe-area-inset-top); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
