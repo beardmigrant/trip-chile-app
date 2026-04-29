@@ -4,7 +4,7 @@ import { useState, useMemo, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { useTheme } from 'next-themes';
 import { Moon, Sun, Zap, Compass, Route as RouteIcon } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -288,29 +288,6 @@ export function TripChileApp() {
           </Button>
         </motion.div>
       </div>
-
-      {/* Welcome card */}
-      {!tripResult && searchedPois.length === 0 && activePoiCategories.size === 0 && (
-        <AnimatePresence>
-          <motion.div
-            initial={{ y: 100, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: 100, opacity: 0 }}
-            transition={{ delay: 0.3 }}
-            className="absolute bottom-24 left-3 right-3 sm:left-4 sm:right-4 sm:bottom-6 sm:max-w-md z-10 safe-bottom pointer-events-none"
-          >
-            <div className="rounded-2xl glass p-4 shadow-xl pointer-events-auto">
-              <div className="text-sm">
-                <div className="font-bold mb-1">¡Bienvenido Jesu! 👋</div>
-                <div className="text-xs text-muted-foreground leading-relaxed">
-                  {STATIONS.length} cargadores en el mapa · Toca el botón <b>⚡+</b> para
-                  planificar tu viaje · Activa categorías arriba para buscar lugares
-                </div>
-              </div>
-            </div>
-          </motion.div>
-        </AnimatePresence>
-      )}
 
       {/* Sheets */}
       <StationDetail
