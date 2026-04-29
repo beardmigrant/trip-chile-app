@@ -1,18 +1,20 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { useTheme } from 'next-themes';
-import { Moon, Sun, Search, MapPin, Zap, Plus } from 'lucide-react';
+import { Moon, Sun, Zap, Plus, Compass } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { SearchBar } from '@/components/layout/search-bar';
+import { StationDetail } from '@/components/trip/station-detail';
+import { PlaceDetail } from '@/components/poi/place-detail';
 import type { ChargingStation, POI } from '@/types';
 import stationsData from '@/data/stations.json';
-import poisData from '@/data/pois-chile.json';
 import { POI_CATEGORIES } from '@/lib/constants';
+import { getPlaceDetails, searchPlacesNearby, type GooglePlace } from '@/lib/google-places';
 
 const MapView = dynamic(() => import('@/components/map/map-view').then((m) => m.MapView), {
   ssr: false,
@@ -24,12 +26,38 @@ const MapView = dynamic(() => import('@/components/map/map-view').then((m) => m.
 });
 
 const STATIONS = stationsData as ChargingStation[];
-const POIS = poisData as POI[];
+
+// Tipos de Google Places por categoría
+const CATEGORY_TO_GOOGLE_TYPES: Record<string, string[]> = {
+  historic: ['museum', 'tourist_attraction', 'church', 'monument'],
+  attraction: ['tourist_attraction', 'point_of_interest'],
+  recreation: ['amusement_park', 'zoo', 'aquarium', 'casino', 'movie_theater'],
+  astro: ['observatory', 'planetarium'],
+  nature: ['park', 'national_park'],
+};
 
 export function TripChileApp() {
   const [showStations, setShowStations] = useState(true);
   const [activePoiCategories, setActivePoiCategories] = useState<Set<string>>(new Set());
-  const [search, setSearch] = useState('');
+  const [selectedStation, setSelectedStation] = useState<ChargingStation | null>(null);
+  const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
+  const [stationDetailOpen, setStationDetailOpen] = useState(false);
+  const [placeDetailOpen, setPlaceDetailOpen] = useState(false);
+  const [searchedPois, setSearchedPois] = useState<GooglePlace[]>([]);
+  const [searching, setSearching] = useState(false);
+
+  // POIs convertidos al formato de la app para el mapa
+  const visiblePois = useMemo<POI[]>(() => {
+    return searchedPois.map((g) => ({
+      id: g.id,
+      name: g.displayName.text,
+      category: detectCategory(g.types || []),
+      lat: g.location.latitude,
+      lng: g.location.longitude,
+      rating: g.rating,
+      address: g.formattedAddress,
+    }));
+  }, [searchedPois]);
 
   const visibleCategories = useMemo(() => activePoiCategories, [activePoiCategories]);
 
@@ -42,18 +70,67 @@ export function TripChileApp() {
     });
   };
 
-  const visibleStations = useMemo(() => {
-    if (!showStations) return [];
-    return STATIONS;
-  }, [showStations]);
+  const visibleStations = useMemo(() => (showStations ? STATIONS : []), [showStations]);
+
+  const handleStationClick = useCallback((s: ChargingStation) => {
+    setSelectedStation(s);
+    setStationDetailOpen(true);
+  }, []);
+
+  const handlePoiClick = useCallback((p: POI) => {
+    setSelectedPlaceId(p.id);
+    setPlaceDetailOpen(true);
+  }, []);
+
+  const handleSelectPlace = useCallback((placeId: string) => {
+    setSelectedPlaceId(placeId);
+    setPlaceDetailOpen(true);
+  }, []);
+
+  // "Buscar cerca": busca POIs según categorías activas en el viewport actual
+  const handleSearchNearby = async (lat: number, lng: number) => {
+    if (activePoiCategories.size === 0) {
+      alert('Activa al menos una categoría (Históricos, Naturaleza, etc.) antes de buscar cerca.');
+      return;
+    }
+
+    setSearching(true);
+    const allResults: GooglePlace[] = [];
+
+    for (const cat of activePoiCategories) {
+      const googleTypes = CATEGORY_TO_GOOGLE_TYPES[cat] || [];
+      for (const type of googleTypes.slice(0, 1)) {
+        // Solo el primer tipo de cada categoría para no abusar de la API
+        const results = await searchPlacesNearby(POI_CATEGORIES[cat as keyof typeof POI_CATEGORIES].label, {
+          lat,
+          lng,
+          radius: 30000, // 30 km
+          types: [type],
+          minRating: 4.0,
+        });
+        allResults.push(...results);
+      }
+    }
+
+    // Deduplicar por ID
+    const unique = Array.from(new Map(allResults.map((p) => [p.id, p])).values());
+    setSearchedPois(unique);
+    setSearching(false);
+
+    if (unique.length === 0) {
+      alert('No se encontraron lugares cercanos para las categorías seleccionadas.');
+    }
+  };
 
   return (
     <div className="relative h-[100dvh] w-screen overflow-hidden bg-background">
       <MapView
         stations={visibleStations}
-        pois={POIS}
+        pois={visiblePois}
         showStations={showStations}
         visiblePoiCategories={visibleCategories}
+        onStationClick={handleStationClick}
+        onPoiClick={handlePoiClick}
       />
 
       <div className="pointer-events-none absolute inset-x-0 top-0 z-10 safe-top">
@@ -79,16 +156,9 @@ export function TripChileApp() {
             initial={{ y: -20, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             transition={{ delay: 0.05 }}
-            className="mt-2 flex items-center gap-2 rounded-2xl glass p-2 pl-4 shadow-lg max-w-md"
+            className="mt-2"
           >
-            <Search className="h-4 w-4 text-muted-foreground" />
-            <Input
-              type="text"
-              placeholder="Buscar ciudad, lugar, cargador..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="border-0 bg-transparent shadow-none focus-visible:ring-0 h-8"
-            />
+            <SearchBar onSelectPlace={handleSelectPlace} />
           </motion.div>
 
           <motion.div
@@ -103,11 +173,15 @@ export function TripChileApp() {
               dotColor="#0066CC"
               icon="⚡"
             >
-              Cargadores {showStations && <Badge variant="primary" className="ml-1">{STATIONS.length}</Badge>}
+              Cargadores{' '}
+              {showStations && (
+                <Badge variant="primary" className="ml-1">
+                  {STATIONS.length}
+                </Badge>
+              )}
             </Chip>
             {Object.entries(POI_CATEGORIES).map(([key, cat]) => {
               const active = activePoiCategories.has(key);
-              const count = POIS.filter((p) => p.category === key).length;
               return (
                 <Chip
                   key={key}
@@ -116,7 +190,7 @@ export function TripChileApp() {
                   dotColor={cat.color}
                   icon={cat.icon}
                 >
-                  {cat.label} {count > 0 && active && <Badge variant="primary" className="ml-1">{count}</Badge>}
+                  {cat.label}
                 </Chip>
               );
             })}
@@ -124,7 +198,27 @@ export function TripChileApp() {
         </div>
       </div>
 
+      {/* FAB Buscar cerca + Planificar */}
       <div className="absolute bottom-6 right-4 z-10 flex flex-col gap-2 safe-bottom">
+        {activePoiCategories.size > 0 && (
+          <motion.div
+            initial={{ scale: 0, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ type: 'spring' }}
+          >
+            <Button
+              size="icon"
+              variant="secondary"
+              onClick={() => handleSearchNearby(-33.4489, -70.6693)}
+              disabled={searching}
+              className="h-12 w-12 rounded-2xl shadow-lg"
+              title="Buscar lugares cerca del centro del mapa"
+            >
+              <Compass className={`h-5 w-5 ${searching ? 'animate-spin' : ''}`} />
+            </Button>
+          </motion.div>
+        )}
+
         <motion.div
           initial={{ scale: 0, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
@@ -133,43 +227,52 @@ export function TripChileApp() {
           <Button
             size="icon"
             className="h-14 w-14 rounded-2xl bg-gradient-to-br from-primary to-blue-500 shadow-xl shadow-primary/40"
+            title="Planificar viaje (próximamente)"
           >
             <Plus className="h-6 w-6" strokeWidth={2.5} />
           </Button>
         </motion.div>
       </div>
 
-      <AnimatePresence>
-        <motion.div
-          initial={{ y: 100, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          exit={{ y: 100, opacity: 0 }}
-          transition={{ delay: 0.3 }}
-          className="absolute bottom-24 left-3 right-3 sm:left-4 sm:right-4 sm:bottom-6 sm:max-w-md z-10 safe-bottom"
-        >
-          <div className="rounded-2xl glass p-4 shadow-xl">
-            <div className="flex items-center gap-3">
-              <div className="grid h-10 w-10 place-items-center rounded-xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
-                <MapPin className="h-5 w-5" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="font-bold text-sm">¡Bienvenido Jesu!</div>
-                <div className="text-xs text-muted-foreground">
-                  {STATIONS.length} cargadores · {POIS.length} sitios curados
+      {/* Welcome Card */}
+      {searchedPois.length === 0 && activePoiCategories.size === 0 && (
+        <AnimatePresence>
+          <motion.div
+            initial={{ y: 100, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 100, opacity: 0 }}
+            transition={{ delay: 0.3 }}
+            className="absolute bottom-24 left-3 right-3 sm:left-4 sm:right-4 sm:bottom-6 sm:max-w-md z-10 safe-bottom pointer-events-none"
+          >
+            <div className="rounded-2xl glass p-4 shadow-xl pointer-events-auto">
+              <div className="text-sm">
+                <div className="font-bold mb-1">¡Bienvenido Jesu! 👋</div>
+                <div className="text-xs text-muted-foreground leading-relaxed">
+                  {STATIONS.length} cargadores en el mapa · Activa categorías arriba para
+                  explorar lugares turísticos · Toca el botón ⚡+ para planificar tu viaje
                 </div>
               </div>
-              <Button size="sm" variant="success" className="text-xs">
-                Planificar viaje
-              </Button>
             </div>
-          </div>
-        </motion.div>
-      </AnimatePresence>
+          </motion.div>
+        </AnimatePresence>
+      )}
+
+      {/* Sheets */}
+      <StationDetail
+        station={selectedStation}
+        open={stationDetailOpen}
+        onOpenChange={setStationDetailOpen}
+      />
+
+      <PlaceDetail
+        placeId={selectedPlaceId}
+        open={placeDetailOpen}
+        onOpenChange={setPlaceDetailOpen}
+      />
     </div>
   );
 }
 
-// Componente separado con guarda de hidratación para evitar mismatch SSR/Client
 function ThemeToggle() {
   const { resolvedTheme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
@@ -178,7 +281,6 @@ function ThemeToggle() {
     setMounted(true);
   }, []);
 
-  // Renderizar un placeholder en SSR para evitar mismatch
   if (!mounted) {
     return (
       <Button variant="ghost" size="icon" className="h-9 w-9" disabled>
@@ -228,4 +330,14 @@ function Chip({ active, onClick, dotColor, icon, children }: ChipProps) {
       <span>{children}</span>
     </button>
   );
+}
+
+function detectCategory(types: string[]): POI['category'] {
+  for (const t of types) {
+    if (['museum', 'church', 'monument', 'historical_landmark'].includes(t)) return 'historic';
+    if (['observatory', 'planetarium'].includes(t)) return 'astro';
+    if (['amusement_park', 'zoo', 'aquarium', 'casino', 'movie_theater'].includes(t)) return 'recreation';
+    if (['park', 'national_park', 'natural_feature'].includes(t)) return 'nature';
+  }
+  return 'attraction';
 }

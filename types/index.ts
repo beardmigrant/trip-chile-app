@@ -1,33 +1,19 @@
 // ============== TIPOS GLOBALES ==============
 
 export interface ChargingStation {
-  /** Nombre */
   n: string;
-  /** Región */
   r: string;
-  /** Comuna */
   c: string;
-  /** Dirección */
   d: string;
-  /** Latitud */
   lat: number;
-  /** Longitud */
   lng: number;
-  /** Operador */
   op: OperatorName;
-  /** Potencia estación (kW) */
   pe: number;
-  /** Potencia cargador (kW) */
   pc: number;
-  /** Número conectores */
   nc: number;
-  /** Conectores disponibles */
   co: ConnectorType[];
-  /** Tipo carga */
   tc: 'DC' | 'AC';
-  /** Es DC rápida (>=50kW) */
   fast: boolean;
-  /** Compatible con Tesla (CCS2/Tipo2) */
   tcomp: boolean;
 }
 
@@ -61,8 +47,8 @@ export interface POI {
   address?: string;
   rating?: number;
   priority?: 1 | 2 | 3 | 4 | 5;
-  duration?: number; // minutos sugeridos
-  cost?: number; // CLP
+  duration?: number;
+  cost?: number;
   imageUrl?: string;
   wikipediaUrl?: string;
   websiteUrl?: string;
@@ -84,63 +70,29 @@ export interface RoutePoint {
 }
 
 export interface OSRMRoute {
-  distance: number; // metros
-  duration: number; // segundos
+  distance: number;
+  duration: number;
   geometry: {
     type: 'LineString';
-    coordinates: [number, number][]; // [lng, lat]
+    coordinates: [number, number][];
   };
-}
-
-export interface TripDay {
-  id: string;
-  date: string; // ISO YYYY-MM-DD
-  type: 'transit' | 'base';
-  /** Para tránsito */
-  from?: RoutePoint;
-  to?: RoutePoint;
-  /** Para base con excursiones */
-  base?: RoutePoint;
-  excursions?: RoutePoint[];
-  /** POIs activados/desactivados */
-  pois?: { id: string; status: 'visit' | 'maybe' | 'skip' }[];
-  /** Notas del usuario */
-  notes?: string;
-  /** Resultado calculado */
-  computed?: {
-    distance: number;
-    duration: number;
-    suggestedStops: ChargingStation[];
-    cost: number;
-  };
-}
-
-export interface Itinerary {
-  id: string;
-  name: string;
-  startDate: string;
-  endDate: string;
-  vehicle: VehicleConfig;
-  days: TripDay[];
-  createdAt: number;
-  updatedAt: number;
 }
 
 export interface VehicleConfig {
   model: string;
-  battery: number; // kWh
-  consumptionHwy: number; // kWh/km
-  consumptionCity: number; // kWh/km
-  dcMax: number; // kW
-  acMax: number; // kW
-  rangeWltp: number; // km
+  battery: number;
+  consumptionHwy: number;
+  consumptionCity: number;
+  dcMax: number;
+  acMax: number;
+  rangeWltp: number;
 }
 
 export interface TripSettings {
-  startSoC: number; // %
-  endSoC: number; // %
-  safetyBuffer: number; // % SoC mínimo entre paradas
-  dcChargeTo: number; // % carga típica DC
+  startSoC: number;
+  endSoC: number;
+  safetyBuffer: number;
+  dcChargeTo: number;
 }
 
 export type Theme = 'light' | 'dark' | 'system';
