@@ -1,8 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { Search, X, MapPin, Locate } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Search, X, MapPin, Locate, Loader2 } from 'lucide-react';
 import { autocompletePlaces, getPlaceDetails, type AutocompletePrediction } from '@/lib/google-places';
 
 interface PlaceSearchInputProps {
@@ -25,16 +24,15 @@ export function PlaceSearchInput({
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [resolving, setResolving] = useState(false);
+  const [locating, setLocating] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Sincronizar query con value
   useEffect(() => {
     if (value) setQuery(value.name);
     else setQuery('');
   }, [value]);
 
-  // Cerrar dropdown al click fuera
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
@@ -94,26 +92,122 @@ export function PlaceSearchInput({
     setOpen(false);
   };
 
-  const handleUseLocation = () => {
+  // ============== GEOLOCATION MEJORADA ==============
+  const handleUseLocation = async () => {
+    // Verificar soporte
     if (!navigator.geolocation) {
-      alert('Geolocalización no disponible en este navegador.');
+      alert('❌ Tu navegador no soporta geolocalización.');
       return;
     }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        onChange({
-          name: 'Mi ubicación actual',
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-        });
-        setQuery('Mi ubicación actual');
-      },
-      (err) => {
-        alert('No se pudo obtener tu ubicación. Verifica permisos.');
-        console.error(err);
-      },
-      { enableHighAccuracy: true, timeout: 10000 }
-    );
+
+    // Verificar contexto seguro (HTTPS o localhost)
+    if (!window.isSecureContext && location.hostname !== 'localhost') {
+      alert(
+        '⚠️ La geolocalización solo funciona en HTTPS.\n\n' +
+        'Si abriste la app desde un archivo local (file://), necesitas hostearla en GitHub Pages, Vercel o similar.\n\n' +
+        'Si ya está en HTTPS, recarga la página.'
+      );
+      return;
+    }
+
+    setLocating(true);
+
+    // Verificar permisos primero (si el navegador lo soporta)
+    if ('permissions' in navigator) {
+      try {
+        const permission = await navigator.permissions.query({ name: 'geolocation' });
+
+        if (permission.state === 'denied') {
+          setLocating(false);
+          alert(
+            '❌ Permiso de ubicación bloqueado.\n\n' +
+            '📱 Para activarlo:\n' +
+            '1. Toca el ícono de candado 🔒 en la barra de direcciones\n' +
+            '2. Toca "Permisos del sitio" o "Configuración del sitio"\n' +
+            '3. Activa "Ubicación"\n' +
+            '4. Recarga la página y toca el ícono otra vez\n\n' +
+            'En Chrome Android también puedes ir a Configuración > Privacidad > Ubicación.'
+          );
+          return;
+        }
+      } catch (e) {
+        // Algunos navegadores antiguos no soportan permissions API, ignorar
+      }
+    }
+
+    // Solicitar ubicación con configuración robusta
+    const tryGeolocation = (highAccuracy: boolean): Promise<GeolocationPosition> => {
+      return new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(
+          resolve,
+          reject,
+          {
+            enableHighAccuracy: highAccuracy,
+            timeout: highAccuracy ? 15000 : 30000,
+            maximumAge: 60000, // acepta una posición cacheada de hasta 1 min
+          }
+        );
+      });
+    };
+
+    try {
+      // Primer intento: alta precisión (GPS)
+      let pos: GeolocationPosition;
+      try {
+        pos = await tryGeolocation(true);
+      } catch (highAccErr: unknown) {
+        const err = highAccErr as GeolocationPositionError;
+        // Si falla por timeout o no disponible, reintentar con baja precisión (red WiFi/celular)
+        if (err.code === 2 || err.code === 3) {
+          console.log('Reintentando geolocalización con baja precisión...');
+          pos = await tryGeolocation(false);
+        } else {
+          throw err;
+        }
+      }
+
+      onChange({
+        name: 'Mi ubicación actual',
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+      });
+      setQuery('Mi ubicación actual');
+    } catch (err: unknown) {
+      const e = err as GeolocationPositionError;
+      console.error('Geolocation error:', e);
+
+      let message = '❌ No se pudo obtener tu ubicación.\n\n';
+
+      if (e.code === 1) {
+        // PERMISSION_DENIED
+        message +=
+          '🚫 Permiso denegado.\n\n' +
+          '📱 Para activarlo en Chrome Android:\n' +
+          '1. Toca el candado 🔒 en la barra de direcciones\n' +
+          '2. "Permisos" → activa "Ubicación"\n' +
+          '3. Recarga la página\n\n' +
+          'Verifica también que la ubicación esté activada en tu celular (Configuración → Ubicación).';
+      } else if (e.code === 2) {
+        // POSITION_UNAVAILABLE
+        message +=
+          '📵 GPS no disponible.\n\n' +
+          'Verifica:\n' +
+          '• La ubicación de tu celular está activada\n' +
+          '• Tienes señal WiFi o datos\n' +
+          '• Sal a un lugar abierto si estás dentro de un edificio';
+      } else if (e.code === 3) {
+        // TIMEOUT
+        message +=
+          '⏱️ Tiempo agotado.\n\n' +
+          'Intenta de nuevo o ingresa la ciudad manualmente.';
+      } else {
+        message += 'Error desconocido. Intenta de nuevo o ingresa la ciudad manualmente.';
+      }
+
+      alert(message);
+    } finally {
+      setLocating(false);
+    }
   };
 
   return (
@@ -136,6 +230,7 @@ export function PlaceSearchInput({
           <button
             onClick={handleClear}
             className="text-muted-foreground hover:text-foreground shrink-0 p-1"
+            type="button"
           >
             <X className="h-4 w-4" />
           </button>
@@ -143,10 +238,16 @@ export function PlaceSearchInput({
         {showLocation && !query && (
           <button
             onClick={handleUseLocation}
-            className="text-primary hover:opacity-80 shrink-0 p-1"
+            disabled={locating}
+            className="text-primary hover:opacity-80 shrink-0 p-1 disabled:opacity-50"
             title="Usar mi ubicación"
+            type="button"
           >
-            <Locate className="h-4 w-4" />
+            {locating ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Locate className="h-4 w-4" />
+            )}
           </button>
         )}
       </div>
@@ -173,6 +274,7 @@ export function PlaceSearchInput({
                     )
                   }
                   className="w-full px-4 py-2.5 flex items-start gap-2.5 hover:bg-accent transition-colors text-left border-b border-border/30 last:border-0"
+                  type="button"
                 >
                   <MapPin className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
                   <div className="flex-1 min-w-0">
