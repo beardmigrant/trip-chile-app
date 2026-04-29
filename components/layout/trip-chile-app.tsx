@@ -3,7 +3,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { useTheme } from 'next-themes';
-import { Moon, Sun, Zap, Plus, Compass, Route as RouteIcon } from 'lucide-react';
+import { Moon, Sun, Zap, Compass, Route as RouteIcon } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 import { Button } from '@/components/ui/button';
@@ -284,7 +284,7 @@ export function TripChileApp() {
             className="h-14 w-14 rounded-2xl bg-gradient-to-br from-primary to-blue-500 shadow-xl shadow-primary/40"
             title="Planificar viaje"
           >
-            <Plus className="h-6 w-6" strokeWidth={2.5} />
+            <Zap className="h-6 w-6" fill="currentColor" strokeWidth={2.5} />
           </Button>
         </motion.div>
       </div>

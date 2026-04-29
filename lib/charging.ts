@@ -1,4 +1,4 @@
-// ============== LÓGICA DE CARGA TESLA (validada en versión HTML) ==============
+// ============== LÓGICA DE CARGA TESLA ==============
 import type { ChargingStation, OSRMRoute } from '@/types';
 import { TESLA_MODEL_Y_JUNIPER, COSTS } from './constants';
 import { distToSegment, haversine } from './utils';
@@ -6,34 +6,28 @@ import { distToSegment, haversine } from './utils';
 export interface TripCalcInput {
   origin: [number, number];
   dest: [number, number];
-  startSoC: number;        // 0-100
-  endSoC: number;          // 0-100 (target al destino)
-  safetyBuffer: number;    // 0-100 SoC mínimo entre paradas
-  dcChargeTo?: number;     // % al cargar en cada DC, default 80
+  startSoC: number;
+  endSoC: number;
+  safetyBuffer: number;
+  dcChargeTo?: number;
   routeGeometry?: OSRMRoute['geometry'];
   candidates: ChargingStation[];
 }
 
 export interface TripCalcResult {
-  distance: number;          // km
-  duration: number;          // min
-  consumption: number;       // kWh
-  endSoCAchieved: number;    // SoC al destino sin cargar
+  distance: number;
+  duration: number;
+  consumption: number;
+  endSoCAchieved: number;
   stopsNeeded: number;
   suggestedStops: ChargingStation[];
-  cost: number;              // CLP
-  gasolineCost: number;      // CLP
-  savings: number;           // CLP
+  cost: number;
+  gasolineCost: number;
+  savings: number;
   savingsPct: number;
   routeGeometry?: OSRMRoute['geometry'];
 }
 
-/**
- * Calcular paradas DC óptimas usando modelo de tramos:
- * - Tramo 1: salida → buffer% (primera parada)
- * - Tramos intermedios: dcChargeTo% → buffer% (entre paradas)
- * - Tramo final: dcChargeTo% → endSoC% (a destino)
- */
 export function calculateTrip(input: TripCalcInput): TripCalcResult {
   const TESLA = TESLA_MODEL_Y_JUNIPER;
   const dcChargeTo = (input.dcChargeTo ?? 80) / 100;
@@ -41,11 +35,10 @@ export function calculateTrip(input: TripCalcInput): TripCalcResult {
   const endSoC = input.endSoC / 100;
   const buffer = input.safetyBuffer / 100;
 
-  // Distancia: si hay geometría real usar OSRM, si no haversine × 1.25
+  // Distancia real
   let distance: number;
   let duration: number;
   if (input.routeGeometry) {
-    // Calcular distancia real del path
     const coords = input.routeGeometry.coordinates;
     let d = 0;
     for (let i = 0; i < coords.length - 1; i++) {
@@ -55,7 +48,7 @@ export function calculateTrip(input: TripCalcInput): TripCalcResult {
       );
     }
     distance = d;
-    duration = (d / 90) * 60; // estimar 90 km/h promedio
+    duration = (d / 90) * 60;
   } else {
     distance = haversine(input.origin, input.dest) * 1.25;
     duration = (distance / 90) * 60;
@@ -65,7 +58,7 @@ export function calculateTrip(input: TripCalcInput): TripCalcResult {
   const consumption = distance * TESLA.consumptionHwy;
   const endSoCAchieved = ((startEnergy - consumption) / TESLA.battery) * 100;
 
-  // Modelo por tramos
+  // Modelo de tramos
   const kmPerPct = TESLA.battery / TESLA.consumptionHwy / 100;
   const tramo1Km = (startSoC - buffer) * 100 * kmPerPct;
   const tramoInterKm = (dcChargeTo - buffer) * 100 * kmPerPct;
@@ -91,7 +84,7 @@ export function calculateTrip(input: TripCalcInput): TripCalcResult {
     kmStops.push(distance - tramoFinalKm);
   }
 
-  // Filtrar candidatos en el corredor real
+  // Path simplificado para detour
   let routePath: [number, number][];
   if (input.routeGeometry?.coordinates) {
     const full = input.routeGeometry.coordinates.map(
@@ -107,8 +100,11 @@ export function calculateTrip(input: TripCalcInput): TripCalcResult {
     routePath = [input.origin, input.dest];
   }
 
+  // ============== CANDIDATOS CON FALLBACK INTELIGENTE ==============
+  // Aceptamos cualquier cargador Tesla compatible (DC o AC).
+  // El SCORING privilegia DC rápida; AC solo se elige si no hay DC en la zona.
   const candidates = input.candidates
-    .filter((s) => s.fast && s.tcomp)
+    .filter((s) => s.tcomp) // solo Tesla compatible (DC o AC)
     .map((s) => {
       let minDetour = Infinity;
       let bestSegIdx = 0;
@@ -131,7 +127,7 @@ export function calculateTrip(input: TripCalcInput): TripCalcResult {
     )
     .sort((a, b) => a._distFromOrigin - b._distFromOrigin);
 
-  // Buscar mejor cargador para cada km objetivo
+  // ============== SELECCIÓN CON SCORING JERÁRQUICO ==============
   const finalStops: (ChargingStation & {
     _distFromOrigin: number;
     _detour: number;
@@ -140,34 +136,61 @@ export function calculateTrip(input: TripCalcInput): TripCalcResult {
 
   for (let i = 0; i < kmStops.length; i++) {
     const target = kmStops[i];
-    const minKm = Math.max(20, target - 150);
-    const maxKm = target + 150;
+    const isLast = i === kmStops.length - 1;
 
-    const window = candidates
+    const window = isLast
+      ? Math.max(80, tramoInterKm * 0.5)
+      : Math.max(80, tramoInterKm * 0.4);
+    const minKm = Math.max(20, target - window);
+    const maxKm = isLast ? target + 30 : target + window;
+
+    const inWindow = candidates
       .filter(
         (s) =>
           s._distFromOrigin >= minKm &&
           s._distFromOrigin <= maxKm &&
           !used.has(`${s.lat}_${s.lng}`)
       )
-      .map((s) => ({
-        ...s,
-        _score:
-          -Math.abs(s._distFromOrigin - target) * 1.5 +
-          Math.min(s.pc, 200) * 0.4 -
-          s._detour * 2,
-      }))
+      .map((s) => {
+        // SCORING JERÁRQUICO: prefiere DC sobre AC, ultra-rápido sobre rápido
+        let typeBonus = 0;
+        if (s.tc === 'DC') {
+          // DC: bonus base alto + bonus por potencia
+          typeBonus = 100;
+          if (s.pc >= 150) typeBonus += 50; // ultra-rápida 150kW+
+          else if (s.pc >= 100) typeBonus += 30; // muy rápida 100kW+
+          else if (s.pc >= 50) typeBonus += 15; // rápida 50kW+
+          // DC <50kW solo +0 extra (raro pero existe)
+        } else {
+          // AC: penalización fuerte (carga lenta, 6-10h vs 30-60min DC)
+          // Pero NO los descartamos completamente — son fallback en zonas remotas
+          typeBonus = -50;
+          // AC trifásica 22kW es el mejor caso de AC, levemente mejor
+          if (s.pc >= 22) typeBonus += 10;
+        }
+
+        return {
+          ...s,
+          _score:
+            // Cercanía al target ideal (peso fuerte)
+            -Math.abs(s._distFromOrigin - target) * 2.5 +
+            // Tipo de cargador (DC mucho mejor que AC)
+            typeBonus +
+            // Penalización por desvío de la ruta
+            -s._detour * 3,
+        };
+      })
       .sort((a, b) => b._score - a._score);
 
-    if (window.length > 0) {
-      finalStops.push(window[0]);
-      used.add(`${window[0].lat}_${window[0].lng}`);
+    if (inWindow.length > 0) {
+      const chosen = inWindow[0];
+      finalStops.push(chosen);
+      used.add(`${chosen.lat}_${chosen.lng}`);
     }
   }
 
   // Cálculos económicos
-  const energyDeficit = consumption - (startEnergy - TESLA.battery * endSoC);
-  const dcEnergy = Math.max(0, energyDeficit);
+  const dcEnergy = stopsActual > 0 ? Math.max(0, consumption - (startEnergy - TESLA.battery * endSoC)) : 0;
   const cost = Math.round(dcEnergy * COSTS.electricityDC);
   const litersEq = (distance * 9) / 100;
   const gasolineCost = Math.round(litersEq * COSTS.gasoline95);
@@ -189,7 +212,6 @@ export function calculateTrip(input: TripCalcInput): TripCalcResult {
   };
 }
 
-/** Tiempo de carga estimado en minutos para una sesión */
 export function estimateChargeTime(chargerKw: number, kwhAdded: number): number {
   const effectivePower = Math.min(chargerKw, TESLA_MODEL_Y_JUNIPER.dcMax) * 0.75;
   return (kwhAdded / effectivePower) * 60;
