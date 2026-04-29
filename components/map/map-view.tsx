@@ -27,11 +27,6 @@ const STYLES = {
 const INITIAL_CENTER: [number, number] = [-70.6693, -33.4489];
 const INITIAL_ZOOM = 6;
 
-/**
- * Crear elemento DOM para un marcador de cargador.
- * IMPORTANTE: NO usamos transform en JS porque MapLibre lo necesita para posicionar.
- * El hover se hace con CSS en el SVG interno.
- */
 function createStationElement(s: ChargingStation, isHighlighted: boolean): HTMLElement {
   const color = OPERATOR_COLORS[s.op] || OPERATOR_COLORS.Otro;
   const initials = OPERATOR_INITIALS[s.op] || '?';
@@ -40,11 +35,12 @@ function createStationElement(s: ChargingStation, isHighlighted: boolean): HTMLE
   el.className = 'tc-marker cursor-pointer';
 
   if (isHighlighted) {
-    const size = 36;
+    // Parada sugerida: GRANDE verde con glow
+    const size = 44;
     el.innerHTML = `
-      <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg" class="tc-svg" style="filter: drop-shadow(0 0 6px rgba(16,185,129,.5)) drop-shadow(0 4px 8px rgba(0,0,0,.4)); transition: transform 0.15s ease;">
-        <circle cx="${size/2}" cy="${size/2}" r="${size/2 - 3}" fill="url(#g${size})" stroke="#fff" stroke-width="3"/>
-        <text x="${size/2}" y="${size/2}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-family="system-ui,-apple-system,sans-serif" font-size="14" font-weight="800">⚡</text>
+      <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg" class="tc-svg" style="filter: drop-shadow(0 0 8px rgba(16,185,129,.7)) drop-shadow(0 4px 10px rgba(0,0,0,.4)); transition: transform 0.2s ease;">
+        <circle cx="${size/2}" cy="${size/2}" r="${size/2 - 4}" fill="url(#g${size})" stroke="#fff" stroke-width="3.5"/>
+        <text x="${size/2}" y="${size/2}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-family="system-ui,-apple-system,sans-serif" font-size="18" font-weight="800">⚡</text>
         <defs>
           <linearGradient id="g${size}" x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" stop-color="#10b981"/>
@@ -145,7 +141,12 @@ export function MapView({
         const isHighlighted = highlightedStops?.has(key) ?? false;
         const el = createStationElement(s, isHighlighted);
         if (onStationClick) el.addEventListener('click', () => onStationClick(s));
-        const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
+        const marker = new maplibregl.Marker({
+          element: el,
+          anchor: 'center',
+          // Z-index alto para paradas sugeridas
+          ...(isHighlighted && { className: 'highlighted-marker' }),
+        })
           .setLngLat([s.lng, s.lat])
           .addTo(map);
         markersRef.current.push(marker);
@@ -163,6 +164,7 @@ export function MapView({
     });
   }, [stations, pois, showStations, visiblePoiCategories, highlightedStops, isReady, onStationClick, onPoiClick]);
 
+  // Dibujar ruta + ajustar viewport
   useEffect(() => {
     if (!mapRef.current || !isReady) return;
     const map = mapRef.current;
@@ -181,7 +183,7 @@ export function MapView({
         type: 'line',
         source: 'route',
         layout: { 'line-join': 'round', 'line-cap': 'round' },
-        paint: { 'line-color': '#ffffff', 'line-width': 8, 'line-opacity': 0.9 },
+        paint: { 'line-color': '#ffffff', 'line-width': 8, 'line-opacity': 0.95 },
       });
       map.addLayer({
         id: 'route-line',
@@ -192,11 +194,13 @@ export function MapView({
       });
 
       const coords = routeGeometry.coordinates;
-      const bounds = coords.reduce(
-        (b, c) => b.extend([c[0], c[1]] as [number, number]),
-        new maplibregl.LngLatBounds(coords[0] as [number, number], coords[0] as [number, number])
-      );
-      map.fitBounds(bounds, { padding: 80 });
+      if (coords.length > 0) {
+        const bounds = coords.reduce(
+          (b, c) => b.extend([c[0], c[1]] as [number, number]),
+          new maplibregl.LngLatBounds(coords[0] as [number, number], coords[0] as [number, number])
+        );
+        map.fitBounds(bounds, { padding: { top: 220, bottom: 120, left: 60, right: 60 } });
+      }
     }
   }, [routeGeometry, isReady]);
 

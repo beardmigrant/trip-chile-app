@@ -3,7 +3,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { useTheme } from 'next-themes';
-import { Moon, Sun, Zap, Plus, Compass } from 'lucide-react';
+import { Moon, Sun, Zap, Plus, Compass, Route as RouteIcon } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 import { Button } from '@/components/ui/button';
@@ -11,10 +11,13 @@ import { Badge } from '@/components/ui/badge';
 import { SearchBar } from '@/components/layout/search-bar';
 import { StationDetail } from '@/components/trip/station-detail';
 import { PlaceDetail } from '@/components/poi/place-detail';
-import type { ChargingStation, POI } from '@/types';
+import { TripPlanner } from '@/components/trip/trip-planner';
+import { TripResult } from '@/components/trip/trip-result';
+import type { ChargingStation, POI, OSRMRoute } from '@/types';
 import stationsData from '@/data/stations.json';
 import { POI_CATEGORIES } from '@/lib/constants';
-import { getPlaceDetails, searchPlacesNearby, type GooglePlace } from '@/lib/google-places';
+import { searchPlacesNearby, type GooglePlace } from '@/lib/google-places';
+import type { TripCalcResult } from '@/lib/charging';
 
 const MapView = dynamic(() => import('@/components/map/map-view').then((m) => m.MapView), {
   ssr: false,
@@ -27,14 +30,19 @@ const MapView = dynamic(() => import('@/components/map/map-view').then((m) => m.
 
 const STATIONS = stationsData as ChargingStation[];
 
-// Tipos de Google Places por categoría
 const CATEGORY_TO_GOOGLE_TYPES: Record<string, string[]> = {
-  historic: ['museum', 'tourist_attraction', 'church', 'monument'],
+  historic: ['museum', 'tourist_attraction', 'church'],
   attraction: ['tourist_attraction', 'point_of_interest'],
-  recreation: ['amusement_park', 'zoo', 'aquarium', 'casino', 'movie_theater'],
+  recreation: ['amusement_park', 'zoo', 'aquarium', 'casino'],
   astro: ['observatory', 'planetarium'],
   nature: ['park', 'national_park'],
 };
+
+interface TripLocation {
+  name: string;
+  lat: number;
+  lng: number;
+}
 
 export function TripChileApp() {
   const [showStations, setShowStations] = useState(true);
@@ -46,7 +54,16 @@ export function TripChileApp() {
   const [searchedPois, setSearchedPois] = useState<GooglePlace[]>([]);
   const [searching, setSearching] = useState(false);
 
-  // POIs convertidos al formato de la app para el mapa
+  // Trip state
+  const [plannerOpen, setPlannerOpen] = useState(false);
+  const [tripResult, setTripResult] = useState<TripCalcResult | null>(null);
+  const [tripOrigin, setTripOrigin] = useState<TripLocation | null>(null);
+  const [tripDest, setTripDest] = useState<TripLocation | null>(null);
+  const [tripStartSoC, setTripStartSoC] = useState(90);
+  const [tripEndSoC, setTripEndSoC] = useState(50);
+  const [tripSafetyBuffer, setTripSafetyBuffer] = useState(30);
+  const [tripResultOpen, setTripResultOpen] = useState(false);
+
   const visiblePois = useMemo<POI[]>(() => {
     return searchedPois.map((g) => ({
       id: g.id,
@@ -59,7 +76,13 @@ export function TripChileApp() {
     }));
   }, [searchedPois]);
 
-  const visibleCategories = useMemo(() => activePoiCategories, [activePoiCategories]);
+  const visibleStations = useMemo(() => (showStations ? STATIONS : []), [showStations]);
+
+  // Highlighted stops para el mapa: las paradas sugeridas del viaje
+  const highlightedStops = useMemo(() => {
+    if (!tripResult) return new Set<string>();
+    return new Set(tripResult.suggestedStops.map((s) => `${s.lat}_${s.lng}`));
+  }, [tripResult]);
 
   const toggleCategory = (cat: string) => {
     setActivePoiCategories((prev) => {
@@ -69,8 +92,6 @@ export function TripChileApp() {
       return next;
     });
   };
-
-  const visibleStations = useMemo(() => (showStations ? STATIONS : []), [showStations]);
 
   const handleStationClick = useCallback((s: ChargingStation) => {
     setSelectedStation(s);
@@ -87,10 +108,9 @@ export function TripChileApp() {
     setPlaceDetailOpen(true);
   }, []);
 
-  // "Buscar cerca": busca POIs según categorías activas en el viewport actual
   const handleSearchNearby = async (lat: number, lng: number) => {
     if (activePoiCategories.size === 0) {
-      alert('Activa al menos una categoría (Históricos, Naturaleza, etc.) antes de buscar cerca.');
+      alert('Activa al menos una categoría antes de buscar cerca.');
       return;
     }
 
@@ -100,19 +120,14 @@ export function TripChileApp() {
     for (const cat of activePoiCategories) {
       const googleTypes = CATEGORY_TO_GOOGLE_TYPES[cat] || [];
       for (const type of googleTypes.slice(0, 1)) {
-        // Solo el primer tipo de cada categoría para no abusar de la API
-        const results = await searchPlacesNearby(POI_CATEGORIES[cat as keyof typeof POI_CATEGORIES].label, {
-          lat,
-          lng,
-          radius: 30000, // 30 km
-          types: [type],
-          minRating: 4.0,
-        });
+        const results = await searchPlacesNearby(
+          POI_CATEGORIES[cat as keyof typeof POI_CATEGORIES].label,
+          { lat, lng, radius: 30000, types: [type], minRating: 4.0 }
+        );
         allResults.push(...results);
       }
     }
 
-    // Deduplicar por ID
     const unique = Array.from(new Map(allResults.map((p) => [p.id, p])).values());
     setSearchedPois(unique);
     setSearching(false);
@@ -122,17 +137,38 @@ export function TripChileApp() {
     }
   };
 
+  const handleTripCalculated = (
+    result: TripCalcResult,
+    origin: TripLocation,
+    dest: TripLocation
+  ) => {
+    setTripResult(result);
+    setTripOrigin(origin);
+    setTripDest(dest);
+    setTripResultOpen(true);
+  };
+
+  const handleClearTrip = () => {
+    setTripResult(null);
+    setTripOrigin(null);
+    setTripDest(null);
+    setTripResultOpen(false);
+  };
+
   return (
     <div className="relative h-[100dvh] w-screen overflow-hidden bg-background">
       <MapView
         stations={visibleStations}
         pois={visiblePois}
         showStations={showStations}
-        visiblePoiCategories={visibleCategories}
+        visiblePoiCategories={activePoiCategories}
+        highlightedStops={highlightedStops}
+        routeGeometry={tripResult?.routeGeometry}
         onStationClick={handleStationClick}
         onPoiClick={handlePoiClick}
       />
 
+      {/* Top bar */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-10 safe-top">
         <div className="px-3 pt-3 pointer-events-auto">
           <motion.div
@@ -198,9 +234,27 @@ export function TripChileApp() {
         </div>
       </div>
 
-      {/* FAB Buscar cerca + Planificar */}
+      {/* FABs */}
       <div className="absolute bottom-6 right-4 z-10 flex flex-col gap-2 safe-bottom">
-        {activePoiCategories.size > 0 && (
+        {tripResult && (
+          <motion.div
+            initial={{ scale: 0, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ type: 'spring' }}
+          >
+            <Button
+              size="icon"
+              variant="success"
+              onClick={() => setTripResultOpen(true)}
+              className="h-12 w-12 rounded-2xl shadow-lg shadow-emerald-500/30"
+              title="Ver mi ruta"
+            >
+              <RouteIcon className="h-5 w-5" />
+            </Button>
+          </motion.div>
+        )}
+
+        {activePoiCategories.size > 0 && !tripResult && (
           <motion.div
             initial={{ scale: 0, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
@@ -212,7 +266,7 @@ export function TripChileApp() {
               onClick={() => handleSearchNearby(-33.4489, -70.6693)}
               disabled={searching}
               className="h-12 w-12 rounded-2xl shadow-lg"
-              title="Buscar lugares cerca del centro del mapa"
+              title="Buscar lugares cerca"
             >
               <Compass className={`h-5 w-5 ${searching ? 'animate-spin' : ''}`} />
             </Button>
@@ -226,16 +280,17 @@ export function TripChileApp() {
         >
           <Button
             size="icon"
+            onClick={() => setPlannerOpen(true)}
             className="h-14 w-14 rounded-2xl bg-gradient-to-br from-primary to-blue-500 shadow-xl shadow-primary/40"
-            title="Planificar viaje (próximamente)"
+            title="Planificar viaje"
           >
             <Plus className="h-6 w-6" strokeWidth={2.5} />
           </Button>
         </motion.div>
       </div>
 
-      {/* Welcome Card */}
-      {searchedPois.length === 0 && activePoiCategories.size === 0 && (
+      {/* Welcome card */}
+      {!tripResult && searchedPois.length === 0 && activePoiCategories.size === 0 && (
         <AnimatePresence>
           <motion.div
             initial={{ y: 100, opacity: 0 }}
@@ -248,8 +303,8 @@ export function TripChileApp() {
               <div className="text-sm">
                 <div className="font-bold mb-1">¡Bienvenido Jesu! 👋</div>
                 <div className="text-xs text-muted-foreground leading-relaxed">
-                  {STATIONS.length} cargadores en el mapa · Activa categorías arriba para
-                  explorar lugares turísticos · Toca el botón ⚡+ para planificar tu viaje
+                  {STATIONS.length} cargadores en el mapa · Toca el botón <b>⚡+</b> para
+                  planificar tu viaje · Activa categorías arriba para buscar lugares
                 </div>
               </div>
             </div>
@@ -268,6 +323,29 @@ export function TripChileApp() {
         placeId={selectedPlaceId}
         open={placeDetailOpen}
         onOpenChange={setPlaceDetailOpen}
+      />
+
+      <TripPlanner
+        open={plannerOpen}
+        onOpenChange={(open) => {
+          setPlannerOpen(open);
+          // Si cierra el planner sin calcular, no pasa nada
+        }}
+        stations={STATIONS}
+        onTripCalculated={handleTripCalculated}
+      />
+
+      <TripResult
+        result={tripResult}
+        origin={tripOrigin}
+        dest={tripDest}
+        startSoC={tripStartSoC}
+        endSoC={tripEndSoC}
+        safetyBuffer={tripSafetyBuffer}
+        open={tripResultOpen}
+        onOpenChange={setTripResultOpen}
+        onClear={handleClearTrip}
+        onStationClick={handleStationClick}
       />
     </div>
   );
@@ -336,7 +414,7 @@ function detectCategory(types: string[]): POI['category'] {
   for (const t of types) {
     if (['museum', 'church', 'monument', 'historical_landmark'].includes(t)) return 'historic';
     if (['observatory', 'planetarium'].includes(t)) return 'astro';
-    if (['amusement_park', 'zoo', 'aquarium', 'casino', 'movie_theater'].includes(t)) return 'recreation';
+    if (['amusement_park', 'zoo', 'aquarium', 'casino'].includes(t)) return 'recreation';
     if (['park', 'national_park', 'natural_feature'].includes(t)) return 'nature';
   }
   return 'attraction';
