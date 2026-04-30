@@ -4,13 +4,15 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
-  Battery, Clock, Zap, MapPin, Navigation, Share2, X, Trash2, Route, DollarSign,
+  Battery, Clock, Zap, MapPin, Navigation, Share2, Trash2, Route, DollarSign,
 } from 'lucide-react';
 import type { TripCalcResult } from '@/lib/charging';
 import type { ChargingStation } from '@/types';
 import { OPERATOR_COLORS, OPERATOR_INITIALS, TESLA_MODEL_Y_JUNIPER } from '@/lib/constants';
 import { estimateChargeTime } from '@/lib/charging';
 import { formatCLP, formatDuration } from '@/lib/utils';
+import { POISuggestionsPanel } from './poi-suggestions-panel';
+import type { POISuggestion } from '@/lib/poi-search';
 
 interface TripResultProps {
   result: TripCalcResult | null;
@@ -23,6 +25,13 @@ interface TripResultProps {
   onOpenChange: (open: boolean) => void;
   onClear: () => void;
   onStationClick: (s: ChargingStation) => void;
+  // POIs en ruta
+  activePoiCategories: Set<string>;
+  addedPOIs: Map<string, POISuggestion>;
+  skippedPOIs: Set<string>;
+  onAddPOI: (poi: POISuggestion) => void;
+  onSkipPOI: (poiId: string) => void;
+  onViewPOI: (placeId: string) => void;
 }
 
 export function TripResult({
@@ -36,6 +45,12 @@ export function TripResult({
   onOpenChange,
   onClear,
   onStationClick,
+  activePoiCategories,
+  addedPOIs,
+  skippedPOIs,
+  onAddPOI,
+  onSkipPOI,
+  onViewPOI,
 }: TripResultProps) {
   if (!result || !origin || !dest) return null;
 
@@ -44,25 +59,31 @@ export function TripResult({
   const stops = result.suggestedStops;
   const dcChargeTo = 80;
 
-  // Calcular timeline: cada parada con su tiempo de carga
   const totalChargeMin = stops.reduce((acc, s) => {
-    const energyAdded = TESLA_MODEL_Y_JUNIPER.battery * (dcChargeTo - safetyBuffer) / 100;
+    const energyAdded = (TESLA_MODEL_Y_JUNIPER.battery * (dcChargeTo - safetyBuffer)) / 100;
     return acc + estimateChargeTime(s.pc, energyAdded);
   }, 0);
 
   const totalDuration = durationMin + totalChargeMin;
 
   const handleShareToCar = async () => {
+    const waypoints: string[] = [];
+    // Combinar paradas DC + POIs agregados ordenados por progress
+    stops.forEach((s) => waypoints.push(`${s.lat},${s.lng}`));
+    Array.from(addedPOIs.values()).forEach((p) => {
+      waypoints.push(`${p.location.latitude},${p.location.longitude}`);
+    });
+
     let url = `https://www.google.com/maps/dir/?api=1&origin=${origin.lat},${origin.lng}&destination=${dest.lat},${dest.lng}&travelmode=driving`;
-    if (stops.length > 0) {
-      const wp = stops.slice(0, 3).map((s) => `${s.lat},${s.lng}`).join('|');
-      url += `&waypoints=${encodeURIComponent(wp)}`;
+    if (waypoints.length > 0) {
+      url += `&waypoints=${encodeURIComponent(waypoints.slice(0, 9).join('|'))}`;
     }
+
     if (navigator.share) {
       try {
         await navigator.share({
           title: `${origin.name} → ${dest.name}`,
-          text: `${distance.toFixed(0)}km · ${stops.length} paradas DC`,
+          text: `${distance.toFixed(0)}km · ${stops.length} paradas DC · ${addedPOIs.size} sitios`,
           url,
         });
       } catch (e) {}
@@ -72,10 +93,15 @@ export function TripResult({
   };
 
   const handleOpenMaps = () => {
+    const waypoints: string[] = [];
+    stops.forEach((s) => waypoints.push(`${s.lat},${s.lng}`));
+    Array.from(addedPOIs.values()).forEach((p) => {
+      waypoints.push(`${p.location.latitude},${p.location.longitude}`);
+    });
+
     let url = `https://www.google.com/maps/dir/?api=1&origin=${origin.lat},${origin.lng}&destination=${dest.lat},${dest.lng}&travelmode=driving`;
-    if (stops.length > 0) {
-      const wp = stops.slice(0, 3).map((s) => `${s.lat},${s.lng}`).join('|');
-      url += `&waypoints=${encodeURIComponent(wp)}`;
+    if (waypoints.length > 0) {
+      url += `&waypoints=${encodeURIComponent(waypoints.slice(0, 9).join('|'))}`;
     }
     window.open(url, '_blank');
   };
@@ -144,7 +170,6 @@ export function TripResult({
             <div className="text-xs uppercase tracking-wider text-muted-foreground font-bold mb-3">
               📍 Timeline del viaje
             </div>
-
             <Timeline
               origin={origin}
               dest={dest}
@@ -158,6 +183,18 @@ export function TripResult({
               onStationClick={onStationClick}
             />
           </div>
+
+          {/* Sugerencias de POIs en ruta - NUEVO en Iteración 4 */}
+          <POISuggestionsPanel
+            routeGeometry={result.routeGeometry}
+            totalDistance={distance}
+            activeCategories={activePoiCategories}
+            addedPOIs={new Set(Array.from(addedPOIs.keys()))}
+            skippedPOIs={skippedPOIs}
+            onAddPOI={onAddPOI}
+            onSkipPOI={onSkipPOI}
+            onViewPOI={onViewPOI}
+          />
 
           {/* Ahorro */}
           {result.savings > 0 && (
@@ -223,18 +260,8 @@ interface TimelineProps {
 }
 
 function Timeline({
-  origin,
-  dest,
-  startSoC,
-  endSoC,
-  safetyBuffer,
-  dcChargeTo,
-  stops,
-  totalDistance,
-  totalDuration,
-  onStationClick,
+  origin, dest, startSoC, endSoC, safetyBuffer, dcChargeTo, stops, totalDistance, totalDuration, onStationClick,
 }: TimelineProps) {
-  // Construir puntos del timeline
   const points = [
     { type: 'origin' as const, name: origin.name, soc: startSoC },
     ...stops.map((s) => ({ type: 'stop' as const, station: s })),
@@ -249,33 +276,17 @@ function Timeline({
         const segmentDistance = next ? totalDistance / (points.length - 1) : 0;
         const segmentDuration = next ? totalDuration / (points.length - 1) : 0;
 
-        // SoC al salir y al llegar al siguiente punto
         const socOut =
           p.type === 'origin' ? startSoC : p.type === 'stop' ? dcChargeTo : 0;
-        const socIn = next
-          ? next.type === 'dest'
-            ? endSoC
-            : safetyBuffer
-          : 0;
+        const socIn = next ? (next.type === 'dest' ? next.soc : safetyBuffer) : 0;
 
         return (
           <div key={i}>
-            {/* Punto */}
             {p.type === 'origin' && (
-              <PointMarker
-                color="emerald"
-                icon="📍"
-                name={p.name}
-                badge={`${p.soc}%`}
-              />
+              <PointMarker color="emerald" icon="📍" name={p.name} badge={`${p.soc}%`} />
             )}
             {p.type === 'dest' && (
-              <PointMarker
-                color="red"
-                icon="🎯"
-                name={p.name}
-                badge={`~${p.soc}%`}
-              />
+              <PointMarker color="red" icon="🎯" name={p.name} badge={`~${p.soc}%`} />
             )}
             {p.type === 'stop' && (
               <StopCard
@@ -287,7 +298,6 @@ function Timeline({
               />
             )}
 
-            {/* Segmento (línea con info) */}
             {!isLast && (
               <div className="ml-4 my-1 flex items-center gap-3 py-1">
                 <div className="w-px h-8 bg-border" />
@@ -312,10 +322,7 @@ function Timeline({
 }
 
 function PointMarker({
-  color,
-  icon,
-  name,
-  badge,
+  color, icon, name, badge,
 }: {
   color: 'emerald' | 'red';
   icon: string;
@@ -332,19 +339,13 @@ function PointMarker({
       <div className="flex-1 min-w-0">
         <div className="font-bold text-sm truncate">{name}</div>
       </div>
-      <Badge variant="default" className="font-bold">
-        {badge}
-      </Badge>
+      <Badge variant="default" className="font-bold">{badge}</Badge>
     </div>
   );
 }
 
 function StopCard({
-  station,
-  index,
-  socArrive,
-  socLeave,
-  onClick,
+  station, index, socArrive, socLeave, onClick,
 }: {
   station: ChargingStation;
   index: number;
@@ -354,9 +355,7 @@ function StopCard({
 }) {
   const color = OPERATOR_COLORS[station.op] || OPERATOR_COLORS.Otro;
   const initials = OPERATOR_INITIALS[station.op] || '?';
-
-  // Tiempo de carga
-  const energyAdded = TESLA_MODEL_Y_JUNIPER.battery * (socLeave - socArrive) / 100;
+  const energyAdded = (TESLA_MODEL_Y_JUNIPER.battery * (socLeave - socArrive)) / 100;
   const chargeMin = estimateChargeTime(station.pc, energyAdded);
 
   return (

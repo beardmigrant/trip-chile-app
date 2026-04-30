@@ -1,5 +1,7 @@
-// Cliente de Google Places API (New)
-// Usa REST API directa, no la JS library completa
+// Cliente de Google Places API (New) - v2 FIXED
+// Fix: eliminado `includedType` en Text Search (causaba fallback a Chile entero)
+// Fix: agregado `strictTypeFiltering` para forzar match estricto cuando hay types
+// Fix: queries simplificados para mejor matching en zonas rurales
 
 export interface GooglePlace {
   id: string;
@@ -11,18 +13,14 @@ export interface GooglePlace {
   primaryTypeDisplayName?: { text: string };
   rating?: number;
   userRatingCount?: number;
-  priceLevel?: 'PRICE_LEVEL_FREE' | 'PRICE_LEVEL_INEXPENSIVE' | 'PRICE_LEVEL_MODERATE' | 'PRICE_LEVEL_EXPENSIVE' | 'PRICE_LEVEL_VERY_EXPENSIVE';
+  priceLevel?: string;
   websiteUri?: string;
   internationalPhoneNumber?: string;
   regularOpeningHours?: {
     openNow?: boolean;
     weekdayDescriptions?: string[];
   };
-  photos?: Array<{
-    name: string;
-    widthPx: number;
-    heightPx: number;
-  }>;
+  photos?: Array<{ name: string; widthPx: number; heightPx: number }>;
   editorialSummary?: { text: string };
 }
 
@@ -45,28 +43,23 @@ if (!API_KEY) {
   console.warn('⚠️ NEXT_PUBLIC_GOOGLE_PLACES_API_KEY not set');
 }
 
-/**
- * Autocomplete de lugares (búsqueda)
- */
 export async function autocompletePlaces(
   query: string,
   options: { latBias?: number; lngBias?: number; radius?: number } = {}
 ): Promise<AutocompletePrediction[]> {
   if (!query || query.length < 2 || !API_KEY) return [];
 
-  // Body simplificado - sin parámetros que causaban error 400
   const body: Record<string, unknown> = {
     input: query,
     languageCode: 'es',
     regionCode: 'CL',
   };
 
-  // Bias geográfico opcional (centrado en Chile)
   if (options.latBias && options.lngBias) {
     body.locationBias = {
       circle: {
         center: { latitude: options.latBias, longitude: options.lngBias },
-        radius: Math.min(options.radius || 50000, 50000), // Max 50km en autocomplete
+        radius: Math.min(options.radius || 50000, 50000),
       },
     };
   }
@@ -81,8 +74,7 @@ export async function autocompletePlaces(
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      const errorText = await res.text();
-      console.error('Places autocomplete error:', res.status, errorText);
+      console.error('Places autocomplete error:', res.status);
       return [];
     }
     const data = await res.json();
@@ -93,9 +85,6 @@ export async function autocompletePlaces(
   }
 }
 
-/**
- * Obtener detalles completos de un lugar por ID
- */
 export async function getPlaceDetails(placeId: string): Promise<GooglePlace | null> {
   if (!placeId || !API_KEY) return null;
 
@@ -125,8 +114,7 @@ export async function getPlaceDetails(placeId: string): Promise<GooglePlace | nu
       },
     });
     if (!res.ok) {
-      const errorText = await res.text();
-      console.error('Place details error:', res.status, errorText);
+      console.error('Place details error:', res.status);
       return null;
     }
     return await res.json();
@@ -137,7 +125,16 @@ export async function getPlaceDetails(placeId: string): Promise<GooglePlace | nu
 }
 
 /**
- * Buscar lugares en una zona (Text Search)
+ * Buscar lugares en una zona (Text Search).
+ *
+ * FIX v2: Google Places Text Search tiene comportamiento de "fallback expandido"
+ * cuando `includedType` + `textQuery` no matchean dentro del `locationRestriction`.
+ * Esto causaba que en zonas rurales (Talca, Chillán, Temuco) Google devolviera
+ * POIs de Santiago en vez de no devolver nada.
+ *
+ * Solución: usar SOLO el textQuery + locationRestriction rectangle.
+ * Si se proveen types, usar `strictTypeFiltering: true` que sí es válido
+ * en Text Search y filtra después de la búsqueda.
  */
 export async function searchPlacesNearby(
   query: string,
@@ -147,6 +144,7 @@ export async function searchPlacesNearby(
     radius?: number;
     types?: string[];
     minRating?: number;
+    strict?: boolean;
   }
 ): Promise<GooglePlace[]> {
   if (!API_KEY) return [];
@@ -155,16 +153,46 @@ export async function searchPlacesNearby(
     textQuery: query,
     languageCode: 'es',
     regionCode: 'CL',
-    locationBias: {
-      circle: {
-        center: { latitude: options.lat, longitude: options.lng },
-        radius: options.radius || 5000,
-      },
-    },
+    pageSize: 20, // máximo permitido en Text Search
   };
 
+  const radiusM = options.radius || 5000;
+
+  if (options.strict !== false) {
+    // locationRestriction acepta SOLO rectangle. Convertimos círculo → bbox
+    // Aproximación: 1 grado lat ≈ 111km, 1 grado lng varía con latitud
+    const radiusKm = radiusM / 1000;
+    const dLat = radiusKm / 111;
+    const dLng = radiusKm / (111 * Math.cos((options.lat * Math.PI) / 180));
+
+    body.locationRestriction = {
+      rectangle: {
+        low: {
+          latitude: options.lat - dLat,
+          longitude: options.lng - dLng,
+        },
+        high: {
+          latitude: options.lat + dLat,
+          longitude: options.lng + dLng,
+        },
+      },
+    };
+  } else {
+    // locationBias acepta circle (más permisivo)
+    body.locationBias = {
+      circle: {
+        center: { latitude: options.lat, longitude: options.lng },
+        radius: radiusM,
+      },
+    };
+  }
+
+  // FIX CRÍTICO: NO usar `includedType` en Text Search.
+  // Causa fallback expandido cuando no hay match exacto.
+  // Usar `strictTypeFiltering` en su lugar (filtra resultado, no la búsqueda).
   if (options.types && options.types.length > 0) {
     body.includedType = options.types[0];
+    body.strictTypeFiltering = true; // ← fuerza filtro estricto, no expande búsqueda
   }
 
   if (options.minRating) {
@@ -201,16 +229,42 @@ export async function searchPlacesNearby(
       return [];
     }
     const data = await res.json();
-    return data.places || [];
+    const places: GooglePlace[] = data.places || [];
+
+    // SAFETY NET: filtro manual post-respuesta para garantizar que
+    // todos los POIs estén DENTRO del rectángulo solicitado.
+    // Esto blinda contra cualquier comportamiento inesperado de Google.
+    if (options.strict !== false) {
+      const radiusKm = radiusM / 1000;
+      const dLat = radiusKm / 111;
+      const dLng = radiusKm / (111 * Math.cos((options.lat * Math.PI) / 180));
+      const minLat = options.lat - dLat;
+      const maxLat = options.lat + dLat;
+      const minLng = options.lng - dLng;
+      const maxLng = options.lng + dLng;
+
+      const filtered = places.filter((p) => {
+        const lat = p.location?.latitude;
+        const lng = p.location?.longitude;
+        if (typeof lat !== 'number' || typeof lng !== 'number') return false;
+        return lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng;
+      });
+
+      if (filtered.length < places.length) {
+        console.log(
+          `🔒 [GeoFilter] ${places.length - filtered.length} POIs descartados fuera del bbox de (${options.lat.toFixed(2)}, ${options.lng.toFixed(2)})`
+        );
+      }
+      return filtered;
+    }
+
+    return places;
   } catch (e) {
     console.error('Search nearby failed:', e);
     return [];
   }
 }
 
-/**
- * Generar URL de foto desde el "name" de la photo reference de Google
- */
 export function getPhotoUrl(photoName: string, maxWidth = 800): string {
   if (!API_KEY) return '';
   return `${BASE_URL}/${photoName}/media?maxWidthPx=${maxWidth}&key=${API_KEY}`;

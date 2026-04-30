@@ -15,6 +15,14 @@ interface MapViewProps {
   routeGeometry?: { type: 'LineString'; coordinates: [number, number][] };
   origin?: [number, number];
   dest?: [number, number];
+  /** Cuando se calcula una ruta, atenuar puntos fuera del corredor */
+  dimNonRoutePoints?: boolean;
+  /** IDs de stations en el corredor de la ruta (no se atenúan) */
+  routeStationIds?: Set<string>;
+  /** IDs de POIs en el corredor de la ruta (no se atenúan) */
+  routePoiIds?: Set<string>;
+  /** Para volar a un punto cuando se busca */
+  flyTo?: { lat: number; lng: number; zoom?: number } | null;
   onStationClick?: (s: ChargingStation) => void;
   onPoiClick?: (p: POI) => void;
 }
@@ -27,15 +35,19 @@ const STYLES = {
 const INITIAL_CENTER: [number, number] = [-70.6693, -33.4489];
 const INITIAL_ZOOM = 6;
 
-function createStationElement(s: ChargingStation, isHighlighted: boolean): HTMLElement {
+function createStationElement(
+  s: ChargingStation,
+  isHighlighted: boolean,
+  dimmed: boolean
+): HTMLElement {
   const color = OPERATOR_COLORS[s.op] || OPERATOR_COLORS.Otro;
   const initials = OPERATOR_INITIALS[s.op] || '?';
 
   const el = document.createElement('div');
   el.className = 'tc-marker cursor-pointer';
+  if (dimmed) el.classList.add('tc-dimmed');
 
   if (isHighlighted) {
-    // Parada sugerida: GRANDE verde con glow
     const size = 44;
     el.innerHTML = `
       <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg" class="tc-svg" style="filter: drop-shadow(0 0 8px rgba(16,185,129,.7)) drop-shadow(0 4px 10px rgba(0,0,0,.4)); transition: transform 0.2s ease;">
@@ -63,13 +75,14 @@ function createStationElement(s: ChargingStation, isHighlighted: boolean): HTMLE
   return el;
 }
 
-function createPoiElement(p: POI): HTMLElement {
+function createPoiElement(p: POI, dimmed: boolean): HTMLElement {
   const cat = POI_CATEGORIES[p.category as keyof typeof POI_CATEGORIES];
   const color = cat?.color || '#64748b';
   const icon = cat?.icon || '📍';
 
   const el = document.createElement('div');
   el.className = 'tc-marker cursor-pointer';
+  if (dimmed) el.classList.add('tc-dimmed');
 
   const size = 30;
   el.innerHTML = `
@@ -88,6 +101,10 @@ export function MapView({
   visiblePoiCategories,
   highlightedStops,
   routeGeometry,
+  dimNonRoutePoints = false,
+  routeStationIds,
+  routePoiIds,
+  flyTo,
   onStationClick,
   onPoiClick,
 }: MapViewProps) {
@@ -97,6 +114,7 @@ export function MapView({
   const { resolvedTheme } = useTheme();
   const [isReady, setIsReady] = useState(false);
 
+  // Inicializar mapa
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
@@ -109,11 +127,7 @@ export function MapView({
     });
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
-
-    map.on('load', () => {
-      setIsReady(true);
-    });
-
+    map.on('load', () => setIsReady(true));
     mapRef.current = map;
 
     return () => {
@@ -123,11 +137,23 @@ export function MapView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Cambiar tema
   useEffect(() => {
     if (!mapRef.current || !isReady) return;
     mapRef.current.setStyle(STYLES[resolvedTheme === 'dark' ? 'dark' : 'light']);
   }, [resolvedTheme, isReady]);
 
+  // FlyTo al buscar
+  useEffect(() => {
+    if (!mapRef.current || !isReady || !flyTo) return;
+    mapRef.current.flyTo({
+      center: [flyTo.lng, flyTo.lat],
+      zoom: flyTo.zoom || 12,
+      duration: 1500,
+    });
+  }, [flyTo, isReady]);
+
+  // Renderizar marcadores
   useEffect(() => {
     if (!mapRef.current || !isReady) return;
     const map = mapRef.current;
@@ -139,14 +165,14 @@ export function MapView({
       stations.forEach((s) => {
         const key = `${s.lat}_${s.lng}`;
         const isHighlighted = highlightedStops?.has(key) ?? false;
-        const el = createStationElement(s, isHighlighted);
+        const dimmed = !!(
+          dimNonRoutePoints &&
+          !isHighlighted &&
+          routeStationIds &&
+          !routeStationIds.has(key));
+        const el = createStationElement(s, isHighlighted, dimmed);
         if (onStationClick) el.addEventListener('click', () => onStationClick(s));
-        const marker = new maplibregl.Marker({
-          element: el,
-          anchor: 'center',
-          // Z-index alto para paradas sugeridas
-          ...(isHighlighted && { className: 'highlighted-marker' }),
-        })
+        const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
           .setLngLat([s.lng, s.lat])
           .addTo(map);
         markersRef.current.push(marker);
@@ -155,16 +181,30 @@ export function MapView({
 
     pois.forEach((p) => {
       if (visiblePoiCategories && !visiblePoiCategories.has(p.category)) return;
-      const el = createPoiElement(p);
+      const dimmed = !!(
+        dimNonRoutePoints && routePoiIds && !routePoiIds.has(p.id));
+      const el = createPoiElement(p, dimmed);
       if (onPoiClick) el.addEventListener('click', () => onPoiClick(p));
       const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
         .setLngLat([p.lng, p.lat])
         .addTo(map);
       markersRef.current.push(marker);
     });
-  }, [stations, pois, showStations, visiblePoiCategories, highlightedStops, isReady, onStationClick, onPoiClick]);
+  }, [
+    stations,
+    pois,
+    showStations,
+    visiblePoiCategories,
+    highlightedStops,
+    isReady,
+    dimNonRoutePoints,
+    routeStationIds,
+    routePoiIds,
+    onStationClick,
+    onPoiClick,
+  ]);
 
-  // Dibujar ruta + ajustar viewport
+  // Dibujar ruta
   useEffect(() => {
     if (!mapRef.current || !isReady) return;
     const map = mapRef.current;

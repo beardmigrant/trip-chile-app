@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next';
+import 'maplibre-gl/dist/maplibre-gl.css';
 import { ThemeProvider } from 'next-themes';
 import './globals.css';
 

@@ -1,7 +1,3 @@
-@import "maplibre-gl/dist/maplibre-gl.css";
-@import "maplibre-gl/dist/maplibre-gl.css";
-@import "maplibre-gl/dist/maplibre-gl.css";
-@import "maplibre-gl/dist/maplibre-gl.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -81,25 +77,14 @@
 .safe-top { padding-top: env(safe-area-inset-top); }
 .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
 
-/* CRITICAL: asegurar altura completa para MapLibre */
-html, body {
-  height: 100%;
-  width: 100%;
-  margin: 0;
-  padding: 0;
-}
 
-#__next, main {
-  height: 100%;
-  width: 100%;
+/* Atenuación de marcadores fuera del corredor de la ruta */
+.tc-marker.tc-dimmed .tc-svg {
+  opacity: 0.18;
+  filter: grayscale(0.6) drop-shadow(0 1px 2px rgba(0,0,0,.2)) !important;
+  transition: opacity 0.3s ease, filter 0.3s ease;
 }
-
-.maplibregl-map {
-  height: 100% !important;
-  width: 100% !important;
-}
-
-/* Hover de marcadores: aplicar transform al SVG interno, NO al wrapper */
-.tc-marker:hover .tc-svg {
-  transform: scale(1.2);
+.tc-marker.tc-dimmed:hover .tc-svg {
+  opacity: 0.6;
+  filter: grayscale(0.2) drop-shadow(0 2px 6px rgba(0,0,0,.3)) !important;
 }

@@ -4,8 +4,8 @@ import type { VehicleConfig, OperatorName } from '@/types';
 
 export const TESLA_MODEL_Y_JUNIPER: VehicleConfig = {
   model: 'Tesla Model Y RWD Juniper 2026',
-  battery: 60,           // kWh útiles LFP
-  consumptionHwy: 0.175, // kWh/km carretera 110km/h
+  battery: 60,
+  consumptionHwy: 0.175,
   consumptionCity: 0.135,
   dcMax: 175,
   acMax: 11,
@@ -13,9 +13,9 @@ export const TESLA_MODEL_Y_JUNIPER: VehicleConfig = {
 };
 
 export const COSTS = {
-  electricityDC: 350,    // CLP/kWh
-  electricityHome: 140,  // CLP/kWh
-  gasoline95: 1300,      // CLP/litro
+  electricityDC: 350,
+  electricityHome: 140,
+  gasoline95: 1300,
 } as const;
 
 export const OPERATOR_COLORS: Record<OperatorName, string> = {
@@ -52,12 +52,25 @@ export const OPERATOR_INITIALS: Record<OperatorName, string> = {
   'Otro': '?',
 };
 
+// ============== CATEGORÍAS DE POIs ==============
+// Expandidas para cobertura completa de un viaje
 export const POI_CATEGORIES = {
+  // 🏨 Alojamiento
+  lodging: { label: 'Alojamiento', color: '#3B82F6', icon: '🏨' },
+  // 🍽️ Comida
+  food: { label: 'Restaurantes', color: '#F97316', icon: '🍽️' },
+  // 🏛️ Históricos y culturales
   historic: { label: 'Históricos', color: '#92400E', icon: '🏛️' },
-  attraction: { label: 'Sitios de interés', color: '#0891B2', icon: '📍' },
-  recreation: { label: 'Recreación', color: '#EC4899', icon: '🎭' },
-  astro: { label: 'Astronomía', color: '#7C3AED', icon: '🌌' },
+  // 📍 Atracciones turísticas
+  attraction: { label: 'Atracciones', color: '#0891B2', icon: '📍' },
+  // 🌲 Naturaleza
   nature: { label: 'Naturaleza', color: '#10B981', icon: '🌲' },
+  // 🎭 Recreación
+  recreation: { label: 'Recreación', color: '#EC4899', icon: '🎭' },
+  // 🌌 Astronomía
+  astro: { label: 'Astronomía', color: '#7C3AED', icon: '🌌' },
+  // ⛽ Servicios (gasolineras, baños, etc.)
+  services: { label: 'Servicios', color: '#6B7280', icon: '⛽' },
 } as const;
 
 export const DEFAULT_TRIP_SETTINGS = {

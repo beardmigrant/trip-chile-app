@@ -57,11 +57,14 @@ export interface POI {
 }
 
 export type POICategory =
+  | 'lodging'
+  | 'food'
   | 'historic'
   | 'attraction'
+  | 'nature'
   | 'recreation'
   | 'astro'
-  | 'nature';
+  | 'services';
 
 export interface RoutePoint {
   lat: number;

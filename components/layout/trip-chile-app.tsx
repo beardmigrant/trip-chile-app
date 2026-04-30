@@ -9,15 +9,26 @@ import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { SearchBar } from '@/components/layout/search-bar';
+import {
+  ChargerFilterPopover,
+  DEFAULT_CHARGER_FILTERS,
+  type ChargerFilters,
+} from '@/components/layout/charger-filter-popover';
 import { StationDetail } from '@/components/trip/station-detail';
 import { PlaceDetail } from '@/components/poi/place-detail';
 import { TripPlanner } from '@/components/trip/trip-planner';
 import { TripResult } from '@/components/trip/trip-result';
-import type { ChargingStation, POI, OSRMRoute } from '@/types';
+import type { ChargingStation, POI } from '@/types';
 import stationsData from '@/data/stations.json';
 import { POI_CATEGORIES } from '@/lib/constants';
 import { searchPlacesNearby, type GooglePlace } from '@/lib/google-places';
 import type { TripCalcResult } from '@/lib/charging';
+import { distToSegment } from '@/lib/utils';
+import {
+  searchPOIsAlongRoute,
+  searchPOIsNearPoint,
+  type POISuggestion,
+} from '@/lib/poi-search';
 
 const MapView = dynamic(() => import('@/components/map/map-view').then((m) => m.MapView), {
   ssr: false,
@@ -30,14 +41,6 @@ const MapView = dynamic(() => import('@/components/map/map-view').then((m) => m.
 
 const STATIONS = stationsData as ChargingStation[];
 
-const CATEGORY_TO_GOOGLE_TYPES: Record<string, string[]> = {
-  historic: ['museum', 'tourist_attraction', 'church'],
-  attraction: ['tourist_attraction', 'point_of_interest'],
-  recreation: ['amusement_park', 'zoo', 'aquarium', 'casino'],
-  astro: ['observatory', 'planetarium'],
-  nature: ['park', 'national_park'],
-};
-
 interface TripLocation {
   name: string;
   lat: number;
@@ -46,6 +49,9 @@ interface TripLocation {
 
 export function TripChileApp() {
   const [showStations, setShowStations] = useState(true);
+  const [chargerFilters, setChargerFilters] = useState<ChargerFilters>(
+    DEFAULT_CHARGER_FILTERS
+  );
   const [activePoiCategories, setActivePoiCategories] = useState<Set<string>>(new Set());
   const [selectedStation, setSelectedStation] = useState<ChargingStation | null>(null);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
@@ -53,6 +59,9 @@ export function TripChileApp() {
   const [placeDetailOpen, setPlaceDetailOpen] = useState(false);
   const [searchedPois, setSearchedPois] = useState<GooglePlace[]>([]);
   const [searching, setSearching] = useState(false);
+  const [flyTo, setFlyTo] = useState<{ lat: number; lng: number; zoom?: number } | null>(
+    null
+  );
 
   // Trip state
   const [plannerOpen, setPlannerOpen] = useState(false);
@@ -64,8 +73,107 @@ export function TripChileApp() {
   const [tripSafetyBuffer, setTripSafetyBuffer] = useState(30);
   const [tripResultOpen, setTripResultOpen] = useState(false);
 
+  // POIs en ruta
+  const [addedPOIs, setAddedPOIs] = useState<Map<string, POISuggestion>>(new Map());
+  const [skippedPOIs, setSkippedPOIs] = useState<Set<string>>(new Set());
+  const [routePois, setRoutePois] = useState<POISuggestion[]>([]);
+
+  // Auto-cargar POIs del corredor cuando hay ruta + categorías activas
+  useEffect(() => {
+    if (!tripResult?.routeGeometry || activePoiCategories.size === 0) {
+      setRoutePois([]);
+      return;
+    }
+    let cancelled = false;
+    searchPOIsAlongRoute(
+      tripResult.routeGeometry,
+      tripResult.distance,
+      activePoiCategories,
+      15
+    ).then((pois) => {
+      if (cancelled) return;
+      setRoutePois(pois);
+      console.log(
+        `✓ [DEBUG] ${pois.length} POIs en corredor`,
+        pois.slice(0, 3).map((p) => ({
+          name: p.displayName?.text,
+          lat: p.location?.latitude,
+          lng: p.location?.longitude,
+          category: p.category,
+        }))
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [tripResult, activePoiCategories]);
+
+  // Mapeo helper: ¿una station pasa los filtros activos?
+  const stationPassesFilters = useCallback(
+    (s: ChargingStation): boolean => {
+      if (!chargerFilters.operators.has(s.op)) return false;
+      if (!chargerFilters.types.has(s.tc)) return false;
+      if (chargerFilters.teslaOnly && !s.tcomp) return false;
+
+      const speed: 'ultra' | 'fast' | 'slow' =
+        s.pc >= 150 ? 'ultra' : s.pc >= 50 ? 'fast' : 'slow';
+      if (!chargerFilters.speeds.has(speed)) return false;
+
+      return true;
+    },
+    [chargerFilters]
+  );
+
+  // Cargadores que pasan el filtro (sobre todos)
+  const filteredStations = useMemo(
+    () => STATIONS.filter(stationPassesFilters),
+    [stationPassesFilters]
+  );
+
+  // IDs de stations dentro del corredor (para no atenuar)
+  const routeStationIds = useMemo(() => {
+    if (!tripResult?.routeGeometry) return new Set<string>();
+
+    const coords = tripResult.routeGeometry.coordinates.map(
+      (c) => [c[1], c[0]] as [number, number]
+    );
+    if (coords.length < 2) return new Set<string>();
+
+    const MAX_DETOUR_KM = 15;
+    const ids = new Set<string>();
+    const step = Math.max(1, Math.floor(coords.length / 50));
+
+    for (const s of filteredStations) {
+      let minDetour = Infinity;
+      const stCoord: [number, number] = [s.lat, s.lng];
+      for (let i = 0; i < coords.length - 1; i += step) {
+        const d = distToSegment(stCoord, coords[i], coords[i + 1]);
+        if (d < minDetour) minDetour = d;
+        if (minDetour <= MAX_DETOUR_KM) break;
+      }
+      if (minDetour <= MAX_DETOUR_KM) {
+        ids.add(`${s.lat}_${s.lng}`);
+      }
+    }
+    return ids;
+  }, [filteredStations, tripResult]);
+
+  // Stations visibles en el mapa (con filtros aplicados)
+  const visibleStations = useMemo(() => {
+    if (!showStations) return [];
+    return filteredStations;
+  }, [showStations, filteredStations]);
+
+  // Conteo para mostrar en el pill: cuántos están visibles realmente
+  const stationsVisibleCount = useMemo(() => {
+    if (!showStations) return 0;
+    if (tripResult) return routeStationIds.size; // solo los del corredor
+    return filteredStations.length;
+  }, [showStations, tripResult, routeStationIds, filteredStations]);
+
+  // POIs visibles
   const visiblePois = useMemo<POI[]>(() => {
-    return searchedPois.map((g) => ({
+    const fromSearch = searchedPois.map((g) => ({
       id: g.id,
       name: g.displayName.text,
       category: detectCategory(g.types || []),
@@ -74,11 +182,34 @@ export function TripChileApp() {
       rating: g.rating,
       address: g.formattedAddress,
     }));
-  }, [searchedPois]);
+    const fromAdded = Array.from(addedPOIs.values()).map((g) => ({
+      id: g.id,
+      name: g.displayName.text,
+      category: g.category as POI['category'],
+      lat: g.location.latitude,
+      lng: g.location.longitude,
+      rating: g.rating,
+      address: g.formattedAddress,
+    }));
+    const fromRoute = routePois.map((g) => ({
+      id: g.id,
+      name: g.displayName.text,
+      category: g.category as POI['category'],
+      lat: g.location.latitude,
+      lng: g.location.longitude,
+      rating: g.rating,
+      address: g.formattedAddress,
+    }));
+    const map = new Map<string, POI>();
+    [...fromSearch, ...fromAdded, ...fromRoute].forEach((p) => map.set(p.id, p));
+    return Array.from(map.values());
+  }, [searchedPois, addedPOIs, routePois]);
 
-  const visibleStations = useMemo(() => (showStations ? STATIONS : []), [showStations]);
+  // POIs que están en el corredor (no se atenúan)
+  const routePoiIds = useMemo(() => {
+    return new Set(routePois.map((p) => p.id));
+  }, [routePois]);
 
-  // Highlighted stops para el mapa: las paradas sugeridas del viaje
   const highlightedStops = useMemo(() => {
     if (!tripResult) return new Set<string>();
     return new Set(tripResult.suggestedStops.map((s) => `${s.lat}_${s.lng}`));
@@ -103,36 +234,48 @@ export function TripChileApp() {
     setPlaceDetailOpen(true);
   }, []);
 
+  // Buscador: abrir ficha + volar mapa + buscar POIs cercanos
   const handleSelectPlace = useCallback((placeId: string) => {
     setSelectedPlaceId(placeId);
     setPlaceDetailOpen(true);
   }, []);
+
+  const handleSelectLocation = useCallback(
+    async (loc: { lat: number; lng: number; name: string }) => {
+      // Volar mapa
+      setFlyTo({ lat: loc.lat, lng: loc.lng, zoom: 12 });
+
+      // Buscar POIs cerca según categorías activas
+      if (activePoiCategories.size > 0) {
+        setSearching(true);
+        const results = await searchPOIsNearPoint(
+          loc.lat,
+          loc.lng,
+          activePoiCategories,
+          15000
+        );
+        setSearchedPois(results);
+        setSearching(false);
+      }
+    },
+    [activePoiCategories]
+  );
 
   const handleSearchNearby = async (lat: number, lng: number) => {
     if (activePoiCategories.size === 0) {
       alert('Activa al menos una categoría antes de buscar cerca.');
       return;
     }
-
     setSearching(true);
-    const allResults: GooglePlace[] = [];
-
-    for (const cat of activePoiCategories) {
-      const googleTypes = CATEGORY_TO_GOOGLE_TYPES[cat] || [];
-      for (const type of googleTypes.slice(0, 1)) {
-        const results = await searchPlacesNearby(
-          POI_CATEGORIES[cat as keyof typeof POI_CATEGORIES].label,
-          { lat, lng, radius: 30000, types: [type], minRating: 4.0 }
-        );
-        allResults.push(...results);
-      }
-    }
-
-    const unique = Array.from(new Map(allResults.map((p) => [p.id, p])).values());
-    setSearchedPois(unique);
+    const results = await searchPOIsNearPoint(
+      lat,
+      lng,
+      activePoiCategories,
+      30000
+    );
+    setSearchedPois(results);
     setSearching(false);
-
-    if (unique.length === 0) {
+    if (results.length === 0) {
       alert('No se encontraron lugares cercanos para las categorías seleccionadas.');
     }
   };
@@ -140,11 +283,17 @@ export function TripChileApp() {
   const handleTripCalculated = (
     result: TripCalcResult,
     origin: TripLocation,
-    dest: TripLocation
+    dest: TripLocation,
+    settings: { startSoC: number; endSoC: number; safetyBuffer: number }
   ) => {
     setTripResult(result);
     setTripOrigin(origin);
     setTripDest(dest);
+    setTripStartSoC(settings.startSoC);
+    setTripEndSoC(settings.endSoC);
+    setTripSafetyBuffer(settings.safetyBuffer);
+    setAddedPOIs(new Map());
+    setSkippedPOIs(new Set());
     setTripResultOpen(true);
   };
 
@@ -152,8 +301,42 @@ export function TripChileApp() {
     setTripResult(null);
     setTripOrigin(null);
     setTripDest(null);
+    setAddedPOIs(new Map());
+    setSkippedPOIs(new Set());
+    setRoutePois([]);
     setTripResultOpen(false);
   };
+
+  const handleAddPOI = useCallback((poi: POISuggestion) => {
+    setAddedPOIs((prev) => {
+      const next = new Map(prev);
+      next.set(poi.id, poi);
+      return next;
+    });
+    setSkippedPOIs((prev) => {
+      const next = new Set(prev);
+      next.delete(poi.id);
+      return next;
+    });
+  }, []);
+
+  const handleSkipPOI = useCallback((poiId: string) => {
+    setAddedPOIs((prev) => {
+      const next = new Map(prev);
+      next.delete(poiId);
+      return next;
+    });
+    setSkippedPOIs((prev) => {
+      const next = new Set(prev);
+      next.add(poiId);
+      return next;
+    });
+  }, []);
+
+  const handleViewPOI = useCallback((placeId: string) => {
+    setSelectedPlaceId(placeId);
+    setPlaceDetailOpen(true);
+  }, []);
 
   return (
     <div className="relative h-[100dvh] w-screen overflow-hidden bg-background">
@@ -164,6 +347,10 @@ export function TripChileApp() {
         visiblePoiCategories={activePoiCategories}
         highlightedStops={highlightedStops}
         routeGeometry={tripResult?.routeGeometry}
+        dimNonRoutePoints={!!tripResult}
+        routeStationIds={routeStationIds}
+        routePoiIds={routePoiIds}
+        flyTo={flyTo}
         onStationClick={handleStationClick}
         onPoiClick={handlePoiClick}
       />
@@ -194,7 +381,10 @@ export function TripChileApp() {
             transition={{ delay: 0.05 }}
             className="mt-2"
           >
-            <SearchBar onSelectPlace={handleSelectPlace} />
+            <SearchBar
+              onSelectPlace={handleSelectPlace}
+              onSelectLocation={handleSelectLocation}
+            />
           </motion.div>
 
           <motion.div
@@ -203,19 +393,14 @@ export function TripChileApp() {
             transition={{ delay: 0.1 }}
             className="mt-2 flex gap-1.5 overflow-x-auto no-scrollbar"
           >
-            <Chip
+            <ChargerFilterPopover
               active={showStations}
-              onClick={() => setShowStations(!showStations)}
-              dotColor="#0066CC"
-              icon="⚡"
-            >
-              Cargadores{' '}
-              {showStations && (
-                <Badge variant="primary" className="ml-1">
-                  {STATIONS.length}
-                </Badge>
-              )}
-            </Chip>
+              count={stationsVisibleCount}
+              totalCount={STATIONS.length}
+              filters={chargerFilters}
+              onActiveChange={setShowStations}
+              onFiltersChange={setChargerFilters}
+            />
             {Object.entries(POI_CATEGORIES).map(([key, cat]) => {
               const active = activePoiCategories.has(key);
               return (
@@ -295,23 +480,17 @@ export function TripChileApp() {
         open={stationDetailOpen}
         onOpenChange={setStationDetailOpen}
       />
-
       <PlaceDetail
         placeId={selectedPlaceId}
         open={placeDetailOpen}
         onOpenChange={setPlaceDetailOpen}
       />
-
       <TripPlanner
         open={plannerOpen}
-        onOpenChange={(open) => {
-          setPlannerOpen(open);
-          // Si cierra el planner sin calcular, no pasa nada
-        }}
+        onOpenChange={setPlannerOpen}
         stations={STATIONS}
         onTripCalculated={handleTripCalculated}
       />
-
       <TripResult
         result={tripResult}
         origin={tripOrigin}
@@ -323,6 +502,12 @@ export function TripChileApp() {
         onOpenChange={setTripResultOpen}
         onClear={handleClearTrip}
         onStationClick={handleStationClick}
+        activePoiCategories={activePoiCategories}
+        addedPOIs={addedPOIs}
+        skippedPOIs={skippedPOIs}
+        onAddPOI={handleAddPOI}
+        onSkipPOI={handleSkipPOI}
+        onViewPOI={handleViewPOI}
       />
     </div>
   );
@@ -331,11 +516,9 @@ export function TripChileApp() {
 function ThemeToggle() {
   const { resolvedTheme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
-
   useEffect(() => {
     setMounted(true);
   }, []);
-
   if (!mounted) {
     return (
       <Button variant="ghost" size="icon" className="h-9 w-9" disabled>
@@ -343,7 +526,6 @@ function ThemeToggle() {
       </Button>
     );
   }
-
   return (
     <Button
       variant="ghost"
@@ -389,10 +571,48 @@ function Chip({ active, onClick, dotColor, icon, children }: ChipProps) {
 
 function detectCategory(types: string[]): POI['category'] {
   for (const t of types) {
-    if (['museum', 'church', 'monument', 'historical_landmark'].includes(t)) return 'historic';
-    if (['observatory', 'planetarium'].includes(t)) return 'astro';
-    if (['amusement_park', 'zoo', 'aquarium', 'casino'].includes(t)) return 'recreation';
+    if (
+      ['lodging', 'hotel', 'campground', 'rv_park', 'guest_house'].includes(t)
+    )
+      return 'lodging';
+    if (
+      ['restaurant', 'cafe', 'bakery', 'bar', 'meal_takeaway', 'meal_delivery', 'food'].includes(t)
+    )
+      return 'food';
+    if (
+      [
+        'museum',
+        'art_gallery',
+        'church',
+        'mosque',
+        'hindu_temple',
+        'synagogue',
+        'cemetery',
+        'library',
+        'monument',
+        'historical_landmark',
+      ].includes(t)
+    )
+      return 'historic';
+    if (['planetarium'].includes(t)) return 'astro';
+    if (
+      [
+        'amusement_park',
+        'zoo',
+        'aquarium',
+        'casino',
+        'movie_theater',
+        'bowling_alley',
+        'stadium',
+        'spa',
+        'gym',
+        'night_club',
+      ].includes(t)
+    )
+      return 'recreation';
     if (['park', 'national_park', 'natural_feature'].includes(t)) return 'nature';
+    if (['gas_station', 'supermarket', 'pharmacy', 'convenience_store', 'atm', 'parking'].includes(t))
+      return 'services';
   }
   return 'attraction';
 }

@@ -21,7 +21,12 @@ interface TripPlannerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   stations: ChargingStation[];
-  onTripCalculated: (result: TripCalcResult, origin: TripLocation, dest: TripLocation) => void;
+  onTripCalculated: (
+    result: TripCalcResult,
+    origin: TripLocation,
+    dest: TripLocation,
+    settings: { startSoC: number; endSoC: number; safetyBuffer: number }
+  ) => void;
 }
 
 const SAFETY_MODES = {
@@ -77,7 +82,11 @@ export function TripPlanner({ open, onOpenChange, stations, onTripCalculated }: 
       });
 
       // 3. Notificar al padre y cerrar
-      onTripCalculated(result, origin, dest);
+      onTripCalculated(result, origin, dest, {
+        startSoC,
+        endSoC,
+        safetyBuffer,
+      });
       onOpenChange(false);
     } catch (err) {
       console.error(err);
