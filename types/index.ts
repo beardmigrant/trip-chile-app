@@ -99,3 +99,9 @@ export interface TripSettings {
 }
 
 export type Theme = 'light' | 'dark' | 'system';
+
+export interface TripLocation {
+  name: string;
+  lat: number;
+  lng: number;
+}

@@ -7,15 +7,10 @@ import { Slider } from '@/components/ui/slider';
 import { Segmented } from '@/components/ui/segmented';
 import { PlaceSearchInput } from '@/components/trip/place-search-input';
 import { Battery, Info, Calculator, Loader2 } from 'lucide-react';
-import type { ChargingStation, OSRMRoute } from '@/types';
+import type { ChargingStation, OSRMRoute, TripLocation } from '@/types';
 import { fetchOSRMRoute } from '@/lib/routing';
 import { calculateTrip, type TripCalcResult } from '@/lib/charging';
 
-interface TripLocation {
-  name: string;
-  lat: number;
-  lng: number;
-}
 
 interface TripPlannerProps {
   open: boolean;

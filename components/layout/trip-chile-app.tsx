@@ -3,7 +3,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { useTheme } from 'next-themes';
-import { Moon, Sun, Zap, Compass, Route as RouteIcon } from 'lucide-react';
+import { Moon, Sun, Zap, Compass, Route as RouteIcon, Star } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 import { Button } from '@/components/ui/button';
@@ -18,7 +18,9 @@ import { StationDetail } from '@/components/trip/station-detail';
 import { PlaceDetail } from '@/components/poi/place-detail';
 import { TripPlanner } from '@/components/trip/trip-planner';
 import { TripResult } from '@/components/trip/trip-result';
-import type { ChargingStation, POI } from '@/types';
+import { SavedRoutesSheet } from '@/components/trip/saved-routes-sheet';
+import { saveRoute, suggestRouteName, type SavedRoute } from '@/lib/saved-routes';
+import type { ChargingStation, POI, TripLocation } from '@/types';
 import stationsData from '@/data/stations.json';
 import { POI_CATEGORIES } from '@/lib/constants';
 import { searchPlacesNearby, type GooglePlace } from '@/lib/google-places';
@@ -41,11 +43,6 @@ const MapView = dynamic(() => import('@/components/map/map-view').then((m) => m.
 
 const STATIONS = stationsData as ChargingStation[];
 
-interface TripLocation {
-  name: string;
-  lat: number;
-  lng: number;
-}
 
 export function TripChileApp() {
   const [showStations, setShowStations] = useState(true);
@@ -72,6 +69,7 @@ export function TripChileApp() {
   const [tripEndSoC, setTripEndSoC] = useState(50);
   const [tripSafetyBuffer, setTripSafetyBuffer] = useState(30);
   const [tripResultOpen, setTripResultOpen] = useState(false);
+  const [savedRoutesOpen, setSavedRoutesOpen] = useState(false);
 
   // POIs en ruta
   const [addedPOIs, setAddedPOIs] = useState<Map<string, POISuggestion>>(new Map());
@@ -307,6 +305,43 @@ export function TripChileApp() {
     setTripResultOpen(false);
   };
 
+
+  const handleSaveCurrentRoute = useCallback(() => {
+    if (!tripOrigin || !tripDest) return;
+    const defaultName = suggestRouteName(tripOrigin, tripDest);
+    const name = prompt('Nombre de la ruta:', defaultName)?.trim();
+    if (!name) return;
+    try {
+      saveRoute({
+        name,
+        origin: tripOrigin,
+        destination: tripDest,
+        startSoC: tripStartSoC,
+        endSoC: tripEndSoC,
+        safetyBuffer: tripSafetyBuffer,
+        activeCategories: Array.from(activePoiCategories),
+      });
+      alert(`✓ Ruta "${name}" guardada`);
+    } catch (e) {
+      alert(`Error al guardar: ${e instanceof Error ? e.message : 'desconocido'}`);
+    }
+  }, [tripOrigin, tripDest, tripStartSoC, tripEndSoC, tripSafetyBuffer, activePoiCategories]);
+
+  const handleLoadRoute = useCallback((route: SavedRoute) => {
+    setTripOrigin(route.origin);
+    setTripDest(route.destination);
+    setTripStartSoC(route.startSoC);
+    setTripEndSoC(route.endSoC);
+    setTripSafetyBuffer(route.safetyBuffer);
+    setActivePoiCategories(new Set(route.activeCategories));
+    setTripResult(null);
+    setAddedPOIs(new Map());
+    setSkippedPOIs(new Set());
+    setRoutePois([]);
+    setTripResultOpen(false);
+    setPlannerOpen(true);
+  }, []);
+
   const handleAddPOI = useCallback((poi: POISuggestion) => {
     setAddedPOIs((prev) => {
       const next = new Map(prev);
@@ -372,6 +407,9 @@ export function TripChileApp() {
                 EV · Tesla Model Y
               </div>
             </div>
+            <Button variant="ghost" size="icon" className="h-9 w-9" onClick={() => setSavedRoutesOpen(true)} aria-label="Rutas guardadas">
+              <Star className="h-4 w-4" />
+            </Button>
             <ThemeToggle />
           </motion.div>
 
@@ -501,6 +539,7 @@ export function TripChileApp() {
         open={tripResultOpen}
         onOpenChange={setTripResultOpen}
         onClear={handleClearTrip}
+        onSaveRoute={handleSaveCurrentRoute}
         onStationClick={handleStationClick}
         activePoiCategories={activePoiCategories}
         addedPOIs={addedPOIs}
@@ -509,6 +548,7 @@ export function TripChileApp() {
         onSkipPOI={handleSkipPOI}
         onViewPOI={handleViewPOI}
       />
+      <SavedRoutesSheet open={savedRoutesOpen} onOpenChange={setSavedRoutesOpen} onLoadRoute={handleLoadRoute} />
     </div>
   );
 }

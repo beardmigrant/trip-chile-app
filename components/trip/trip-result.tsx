@@ -4,7 +4,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
-  Battery, Clock, Zap, MapPin, Navigation, Share2, Trash2, Route, DollarSign,
+  Battery, Clock, Zap, MapPin, Navigation, Share2, Trash2, Route, DollarSign, Star,
 } from 'lucide-react';
 import type { TripCalcResult } from '@/lib/charging';
 import type { ChargingStation } from '@/types';
@@ -24,6 +24,7 @@ interface TripResultProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onClear: () => void;
+  onSaveRoute: () => void;
   onStationClick: (s: ChargingStation) => void;
   // POIs en ruta
   activePoiCategories: Set<string>;
@@ -44,6 +45,7 @@ export function TripResult({
   open,
   onOpenChange,
   onClear,
+  onSaveRoute,
   onStationClick,
   activePoiCategories,
   addedPOIs,
@@ -204,10 +206,14 @@ export function TripResult({
           )}
 
           {/* Acciones */}
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             <Button variant="outline" onClick={handleOpenMaps} className="gap-2">
               <Navigation className="h-4 w-4" />
               Maps
+            </Button>
+            <Button variant="outline" onClick={onSaveRoute} className="gap-2">
+              <Star className="h-4 w-4" />
+              Guardar
             </Button>
             <Button variant="outline" onClick={onClear} className="gap-2">
               <Trash2 className="h-4 w-4" />
