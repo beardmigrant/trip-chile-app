@@ -19,6 +19,8 @@ import { PlaceDetail } from '@/components/poi/place-detail';
 import { TripPlanner } from '@/components/trip/trip-planner';
 import { TripResult } from '@/components/trip/trip-result';
 import { SavedRoutesSheet } from '@/components/trip/saved-routes-sheet';
+import { MapStyleSwitcher } from '@/components/map/map-style-switcher';
+import type { MapStyleId } from '@/components/map/map-view';
 import { saveRoute, suggestRouteName, type SavedRoute } from '@/lib/saved-routes';
 import type { ChargingStation, POI, TripLocation } from '@/types';
 import stationsData from '@/data/stations.json';
@@ -70,6 +72,25 @@ export function TripChileApp() {
   const [tripSafetyBuffer, setTripSafetyBuffer] = useState(30);
   const [tripResultOpen, setTripResultOpen] = useState(false);
   const [savedRoutesOpen, setSavedRoutesOpen] = useState(false);
+  const [mapStyleId, setMapStyleId] = useState<MapStyleId>('auto');
+
+  // Cargar mapStyleId persistido en localStorage al montar
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const saved = localStorage.getItem('tripchile:map-style');
+    if (saved === 'auto' || saved === 'voyager' || saved === 'dark' || saved === 'satellite') {
+      setMapStyleId(saved);
+    }
+  }, []);
+
+  // Persistir cuando cambia
+  const handleMapStyleChange = useCallback((id: MapStyleId) => {
+    setMapStyleId(id);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('tripchile:map-style', id);
+    }
+  }, []);
+
 
   // POIs en ruta
   const [addedPOIs, setAddedPOIs] = useState<Map<string, POISuggestion>>(new Map());
@@ -386,6 +407,7 @@ export function TripChileApp() {
         routeStationIds={routeStationIds}
         routePoiIds={routePoiIds}
         flyTo={flyTo}
+        mapStyleId={mapStyleId}
         onStationClick={handleStationClick}
         onPoiClick={handlePoiClick}
       />
@@ -548,6 +570,7 @@ export function TripChileApp() {
         onSkipPOI={handleSkipPOI}
         onViewPOI={handleViewPOI}
       />
+      <MapStyleSwitcher current={mapStyleId} onChange={handleMapStyleChange} />
       <SavedRoutesSheet open={savedRoutesOpen} onOpenChange={setSavedRoutesOpen} onLoadRoute={handleLoadRoute} />
     </div>
   );

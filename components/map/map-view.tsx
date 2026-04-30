@@ -23,14 +23,65 @@ interface MapViewProps {
   routePoiIds?: Set<string>;
   /** Para volar a un punto cuando se busca */
   flyTo?: { lat: number; lng: number; zoom?: number } | null;
+  /** Estilo de mapa elegido por el usuario (Voyager / Dark / Satélite / Auto) */
+  mapStyleId?: MapStyleId;
   onStationClick?: (s: ChargingStation) => void;
   onPoiClick?: (p: POI) => void;
 }
 
-const STYLES = {
-  light: 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json',
+export type MapStyleId = 'auto' | 'voyager' | 'dark' | 'satellite';
+
+export const MAP_STYLE_OPTIONS: Array<{ id: MapStyleId; label: string }> = [
+  { id: 'auto', label: 'Auto (según tema)' },
+  { id: 'voyager', label: 'Voyager (claro)' },
+  { id: 'dark', label: 'Dark Matter (oscuro)' },
+  { id: 'satellite', label: 'Satélite' },
+];
+
+const STYLES: Record<Exclude<MapStyleId, 'auto'>, maplibregl.StyleSpecification | string> = {
+  voyager: 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json',
   dark: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+  satellite: {
+    version: 8,
+    sources: {
+      'esri-world-imagery': {
+        type: 'raster',
+        tiles: [
+          'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        ],
+        tileSize: 256,
+        attribution: 'Tiles © Esri',
+        maxzoom: 19,
+      },
+    },
+    layers: [
+      {
+        id: 'esri-world-imagery-layer',
+        type: 'raster',
+        source: 'esri-world-imagery',
+        minzoom: 0,
+        maxzoom: 22,
+      },
+    ],
+  },
 };
+
+/** Resuelve el estilo a usar dado el style elegido + theme actual */
+function getMaxZoomForStyle(styleId: MapStyleId, themeIsDark: boolean): number {
+  const effective = styleId === 'auto' ? (themeIsDark ? 'dark' : 'voyager') : styleId;
+  // Satelite tiene cobertura limitada en zonas rurales de Chile
+  return effective === 'satellite' ? 16 : 18;
+}
+
+function resolveStyle(
+  styleId: MapStyleId,
+  themeIsDark: boolean
+): maplibregl.StyleSpecification | string {
+  if (styleId === 'auto') {
+    return themeIsDark ? STYLES.dark : STYLES.voyager;
+  }
+  return STYLES[styleId];
+}
 
 const INITIAL_CENTER: [number, number] = [-70.6693, -33.4489];
 const INITIAL_ZOOM = 6;
@@ -105,6 +156,7 @@ export function MapView({
   routeStationIds,
   routePoiIds,
   flyTo,
+  mapStyleId = 'auto',
   onStationClick,
   onPoiClick,
 }: MapViewProps) {
@@ -113,6 +165,7 @@ export function MapView({
   const markersRef = useRef<Marker[]>([]);
   const { resolvedTheme } = useTheme();
   const [isReady, setIsReady] = useState(false);
+  const [styleVersion, setStyleVersion] = useState(0);
 
   // Inicializar mapa
   useEffect(() => {
@@ -120,9 +173,10 @@ export function MapView({
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: STYLES[resolvedTheme === 'dark' ? 'dark' : 'light'],
+      style: resolveStyle(mapStyleId, resolvedTheme === 'dark'),
       center: INITIAL_CENTER,
       zoom: INITIAL_ZOOM,
+      maxZoom: getMaxZoomForStyle(mapStyleId, resolvedTheme === 'dark'),
       attributionControl: false,
     });
 
@@ -137,11 +191,26 @@ export function MapView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Cambiar tema
+  // Cambiar tema o estilo de mapa
   useEffect(() => {
     if (!mapRef.current || !isReady) return;
-    mapRef.current.setStyle(STYLES[resolvedTheme === 'dark' ? 'dark' : 'light']);
-  }, [resolvedTheme, isReady]);
+    const map = mapRef.current;
+    const isDark = resolvedTheme === 'dark';
+    const newMaxZoom = getMaxZoomForStyle(mapStyleId, isDark);
+    map.setMaxZoom(newMaxZoom);
+    // Si el zoom actual supera el nuevo max, reducir
+    if (map.getZoom() > newMaxZoom) {
+      map.setZoom(newMaxZoom);
+    }
+    map.setStyle(resolveStyle(mapStyleId, isDark));
+    // Cuando MapLibre termina de cargar el nuevo estilo, marca un nuevo version
+    // para que los useEffect de markers y ruta vuelvan a renderizar
+    const onStyleLoad = () => setStyleVersion((v) => v + 1);
+    map.once('style.load', onStyleLoad);
+    return () => {
+      map.off('style.load', onStyleLoad);
+    };
+  }, [resolvedTheme, isReady, mapStyleId]);
 
   // FlyTo al buscar
   useEffect(() => {
@@ -171,6 +240,10 @@ export function MapView({
           routeStationIds &&
           !routeStationIds.has(key));
         const el = createStationElement(s, isHighlighted, dimmed);
+        // Jerarquía visual: cargadores destacados de la ruta encima de todo
+        if (isHighlighted) el.style.zIndex = '30';
+        else if (dimmed) el.style.zIndex = '5';
+        else el.style.zIndex = '10';
         if (onStationClick) el.addEventListener('click', () => onStationClick(s));
         const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
           .setLngLat([s.lng, s.lat])
@@ -184,6 +257,9 @@ export function MapView({
       const dimmed = !!(
         dimNonRoutePoints && routePoiIds && !routePoiIds.has(p.id));
       const el = createPoiElement(p, dimmed);
+      // POIs en corredor: prioridad media. Atenuados: prioridad baja.
+      if (dimmed) el.style.zIndex = '5';
+      else el.style.zIndex = '15';
       if (onPoiClick) el.addEventListener('click', () => onPoiClick(p));
       const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
         .setLngLat([p.lng, p.lat])
@@ -202,6 +278,7 @@ export function MapView({
     routePoiIds,
     onStationClick,
     onPoiClick,
+    styleVersion,
   ]);
 
   // Dibujar ruta
@@ -242,7 +319,7 @@ export function MapView({
         map.fitBounds(bounds, { padding: { top: 220, bottom: 120, left: 60, right: 60 } });
       }
     }
-  }, [routeGeometry, isReady]);
+  }, [routeGeometry, isReady, styleVersion]);
 
   return <div ref={containerRef} className="absolute inset-0" />;
 }
